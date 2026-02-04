@@ -14,9 +14,15 @@ A macOS app for controlling SCSI media changer devices. Built for the [Sony VGP-
 - macOS 10.15 (Catalina) through macOS 15 (Sequoia)
 - A SCSI media changer device connected via FireWire or Thunderbolt-to-FireWire adapter
 
-> **Important:** macOS 16 (Tahoe) [removed FireWire support entirely](https://tidbits.com/2025/09/19/support-for-firewire-removed-from-macos-26-tahoe/). If your changer connects via FireWire, you must use macOS 15 (Sequoia) or earlier.
+> **Important:** macOS 16 (Tahoe) [removed FireWire support entirely](https://tidbits.com/2025/09/19/support-for-firewire-removed-from-macos-26-tahoe/). If your changer connects via FireWire, you must use macOS 15 (Sequoia) or earlier. The app will compile and run on Tahoe, but will show a warning at startup and won't be able to connect to FireWire devices.
 
 ## Build
+
+Clone with submodules:
+
+```sh
+git clone --recurse-submodules https://github.com/toml0006/discbot.git
+```
 
 Open `discbot.xcodeproj` in Xcode and build.
 

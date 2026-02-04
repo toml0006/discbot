@@ -15,6 +15,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var window: NSWindow?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Check for macOS Tahoe (16.0+) which removed FireWire support
+        if ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 16 {
+            showTahoeWarning()
+        }
+
         let contentView = MainView()
             .environmentObject(viewModel)
 
@@ -24,7 +29,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             backing: .buffered,
             defer: false
         )
-        window?.title = "VGP-XL1B Changer"
+        window?.title = "Discbot"
         window?.minSize = NSSize(width: 700, height: 500)
         window?.contentView = NSHostingView(rootView: contentView)
         window?.center()
@@ -38,6 +43,19 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         return true
     }
 
+    private func showTahoeWarning() {
+        let alert = NSAlert()
+        alert.messageText = "FireWire Not Supported"
+        alert.informativeText = "macOS Tahoe removed FireWire support. Discbot cannot connect to FireWire devices on this version of macOS.\n\nTo use Discbot with a FireWire changer, you'll need macOS 15 (Sequoia) or earlier."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Continue Anyway")
+        alert.addButton(withTitle: "Quit")
+
+        if alert.runModal() == .alertSecondButtonReturn {
+            NSApplication.shared.terminate(nil)
+        }
+    }
+
     private func setupMenuBar() {
         let mainMenu = NSMenu()
 
@@ -46,9 +64,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         mainMenu.addItem(appMenuItem)
         let appMenu = NSMenu()
         appMenuItem.submenu = appMenu
-        appMenu.addItem(withTitle: "About VGP-XL1B Changer", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
+        appMenu.addItem(withTitle: "About Discbot", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
         appMenu.addItem(NSMenuItem.separator())
-        appMenu.addItem(withTitle: "Quit VGP-XL1B Changer", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        appMenu.addItem(withTitle: "Quit Discbot", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
 
         // File menu
         let fileMenuItem = NSMenuItem()
