@@ -1,0 +1,501 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 50;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		/* App Swift files */
+		AA0000 /* main.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0000; };
+		AA0001 /* VGPChangerApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0001; };
+		AA0002 /* Slot.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0002; };
+		AA0003 /* DriveStatus.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0003; };
+		AA0004 /* DiscMetadata.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0004; };
+		AA0005 /* ChangerError.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0005; };
+		AA0006 /* ChangerService.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0006; };
+		AA0007 /* MountService.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0007; };
+		AA0016 /* ImagingService.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0016; };
+		AA0017 /* MetadataService.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0017; };
+		AA0008 /* ChangerViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0008; };
+		AA0009 /* BatchOperationState.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0009; };
+		AA0010 /* MainView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0010; };
+		AA0011 /* DriveStatusView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0011; };
+		AA0012 /* InventoryGridView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0012; };
+		AA0013 /* SlotCellView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0013; };
+		AA0014 /* OperationProgressView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0014; };
+		AA0015 /* BatchOperationSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0015; };
+		AA0018 /* CompatViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0018; };
+		AA0019 /* InventoryListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0019; };
+		/* C library files */
+		AA0020 /* sbp2.c in Sources */ = {isa = PBXBuildFile; fileRef = AB0020; };
+		AA0021 /* scsi.c in Sources */ = {isa = PBXBuildFile; fileRef = AB0021; };
+		AA0022 /* mount.c in Sources */ = {isa = PBXBuildFile; fileRef = AB0022; };
+		/* Frameworks */
+		AA0030 /* CoreFoundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AB0030; };
+		AA0031 /* IOKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AB0031; };
+		AA0032 /* DiskArbitration.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AB0032; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		/* App target */
+		AC0001 /* VGPChangerApp.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = VGPChangerApp.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		/* Swift files */
+		AB0000 /* main.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
+		AB0001 /* VGPChangerApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VGPChangerApp.swift; sourceTree = "<group>"; };
+		AB0002 /* Slot.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Slot.swift; sourceTree = "<group>"; };
+		AB0003 /* DriveStatus.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DriveStatus.swift; sourceTree = "<group>"; };
+		AB0004 /* DiscMetadata.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiscMetadata.swift; sourceTree = "<group>"; };
+		AB0005 /* ChangerError.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChangerError.swift; sourceTree = "<group>"; };
+		AB0006 /* ChangerService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChangerService.swift; sourceTree = "<group>"; };
+		AB0007 /* MountService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MountService.swift; sourceTree = "<group>"; };
+		AB0016 /* ImagingService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImagingService.swift; sourceTree = "<group>"; };
+		AB0017 /* MetadataService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataService.swift; sourceTree = "<group>"; };
+		AB0008 /* ChangerViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChangerViewModel.swift; sourceTree = "<group>"; };
+		AB0009 /* BatchOperationState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BatchOperationState.swift; sourceTree = "<group>"; };
+		AB0010 /* MainView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainView.swift; sourceTree = "<group>"; };
+		AB0011 /* DriveStatusView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DriveStatusView.swift; sourceTree = "<group>"; };
+		AB0012 /* InventoryGridView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InventoryGridView.swift; sourceTree = "<group>"; };
+		AB0013 /* SlotCellView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SlotCellView.swift; sourceTree = "<group>"; };
+		AB0014 /* OperationProgressView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OperationProgressView.swift; sourceTree = "<group>"; };
+		AB0015 /* BatchOperationSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BatchOperationSheet.swift; sourceTree = "<group>"; };
+		AB0018 /* CompatViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CompatViews.swift; sourceTree = "<group>"; };
+		AB0019 /* InventoryListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InventoryListView.swift; sourceTree = "<group>"; };
+		/* C library files */
+		AB0020 /* sbp2.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = sbp2.c; sourceTree = "<group>"; };
+		AB0021 /* scsi.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = scsi.c; sourceTree = "<group>"; };
+		AB0022 /* mount.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = mount.c; sourceTree = "<group>"; };
+		AB0023 /* sbp2.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = sbp2.h; sourceTree = "<group>"; };
+		AB0024 /* scsi.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = scsi.h; sourceTree = "<group>"; };
+		AB0025 /* mount.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = mount.h; sourceTree = "<group>"; };
+		/* Bridging header */
+		AB0026 /* VGPChangerApp-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "VGPChangerApp-Bridging-Header.h"; sourceTree = "<group>"; };
+		/* Resources */
+		AB0027 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		AB0028 /* VGPChangerApp.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = VGPChangerApp.entitlements; sourceTree = "<group>"; };
+		/* Frameworks */
+		AB0030 /* CoreFoundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreFoundation.framework; path = System/Library/Frameworks/CoreFoundation.framework; sourceTree = SDKROOT; };
+		AB0031 /* IOKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = IOKit.framework; path = System/Library/Frameworks/IOKit.framework; sourceTree = SDKROOT; };
+		AB0032 /* DiskArbitration.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = DiskArbitration.framework; path = System/Library/Frameworks/DiskArbitration.framework; sourceTree = SDKROOT; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		AD0001 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				AA0030 /* CoreFoundation.framework in Frameworks */,
+				AA0031 /* IOKit.framework in Frameworks */,
+				AA0032 /* DiskArbitration.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		AE0001 = {
+			isa = PBXGroup;
+			children = (
+				AE0002 /* VGPChangerApp */,
+				AE0003 /* CChangerLib */,
+				AE0004 /* Frameworks */,
+				AE0005 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		AE0002 /* VGPChangerApp */ = {
+			isa = PBXGroup;
+			children = (
+				AE0010 /* App */,
+				AE0011 /* Models */,
+				AE0012 /* Services */,
+				AE0013 /* ViewModels */,
+				AE0014 /* Views */,
+				AE0015 /* Bridging */,
+				AE0016 /* Resources */,
+			);
+			path = VGPChangerApp;
+			sourceTree = "<group>";
+		};
+		AE0003 /* CChangerLib */ = {
+			isa = PBXGroup;
+			children = (
+				AB0020 /* sbp2.c */,
+				AB0023 /* sbp2.h */,
+				AB0021 /* scsi.c */,
+				AB0024 /* scsi.h */,
+				AB0022 /* mount.c */,
+				AB0025 /* mount.h */,
+			);
+			path = CChangerLib;
+			sourceTree = "<group>";
+		};
+		AE0004 /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				AB0030 /* CoreFoundation.framework */,
+				AB0031 /* IOKit.framework */,
+				AB0032 /* DiskArbitration.framework */,
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
+		AE0005 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				AC0001 /* VGPChangerApp.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		AE0010 /* App */ = {
+			isa = PBXGroup;
+			children = (
+				AB0000 /* main.swift */,
+				AB0001 /* VGPChangerApp.swift */,
+			);
+			path = App;
+			sourceTree = "<group>";
+		};
+		AE0011 /* Models */ = {
+			isa = PBXGroup;
+			children = (
+				AB0002 /* Slot.swift */,
+				AB0003 /* DriveStatus.swift */,
+				AB0004 /* DiscMetadata.swift */,
+				AB0005 /* ChangerError.swift */,
+			);
+			path = Models;
+			sourceTree = "<group>";
+		};
+		AE0012 /* Services */ = {
+			isa = PBXGroup;
+			children = (
+				AB0006 /* ChangerService.swift */,
+				AB0007 /* MountService.swift */,
+				AB0016 /* ImagingService.swift */,
+				AB0017 /* MetadataService.swift */,
+			);
+			path = Services;
+			sourceTree = "<group>";
+		};
+		AE0013 /* ViewModels */ = {
+			isa = PBXGroup;
+			children = (
+				AB0008 /* ChangerViewModel.swift */,
+				AB0009 /* BatchOperationState.swift */,
+			);
+			path = ViewModels;
+			sourceTree = "<group>";
+		};
+		AE0014 /* Views */ = {
+			isa = PBXGroup;
+			children = (
+				AB0010 /* MainView.swift */,
+				AB0011 /* DriveStatusView.swift */,
+				AB0012 /* InventoryGridView.swift */,
+				AB0019 /* InventoryListView.swift */,
+				AB0013 /* SlotCellView.swift */,
+				AB0014 /* OperationProgressView.swift */,
+				AB0015 /* BatchOperationSheet.swift */,
+				AB0018 /* CompatViews.swift */,
+			);
+			path = Views;
+			sourceTree = "<group>";
+		};
+		AE0015 /* Bridging */ = {
+			isa = PBXGroup;
+			children = (
+				AB0026 /* VGPChangerApp-Bridging-Header.h */,
+			);
+			path = Bridging;
+			sourceTree = "<group>";
+		};
+		AE0016 /* Resources */ = {
+			isa = PBXGroup;
+			children = (
+				AB0027 /* Info.plist */,
+				AB0028 /* VGPChangerApp.entitlements */,
+			);
+			path = Resources;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		AF0001 /* VGPChangerApp */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = AG0001 /* Build configuration list for PBXNativeTarget "VGPChangerApp" */;
+			buildPhases = (
+				AF0010 /* Sources */,
+				AD0001 /* Frameworks */,
+				AF0020 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = VGPChangerApp;
+			productName = VGPChangerApp;
+			productReference = AC0001 /* VGPChangerApp.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		AH0001 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				LastSwiftUpdateCheck = 1160;
+				LastUpgradeCheck = 1160;
+				TargetAttributes = {
+					AF0001 = {
+						CreatedOnToolsVersion = 11.6;
+					};
+				};
+			};
+			buildConfigurationList = AG0002 /* Build configuration list for PBXProject "VGPChangerApp" */;
+			compatibilityVersion = "Xcode 11.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = AE0001;
+			productRefGroup = AE0005 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				AF0001 /* VGPChangerApp */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		AF0020 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		AF0010 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				AA0000 /* main.swift in Sources */,
+				AA0001 /* VGPChangerApp.swift in Sources */,
+				AA0002 /* Slot.swift in Sources */,
+				AA0003 /* DriveStatus.swift in Sources */,
+				AA0004 /* DiscMetadata.swift in Sources */,
+				AA0005 /* ChangerError.swift in Sources */,
+				AA0006 /* ChangerService.swift in Sources */,
+				AA0007 /* MountService.swift in Sources */,
+				AA0008 /* ChangerViewModel.swift in Sources */,
+				AA0009 /* BatchOperationState.swift in Sources */,
+				AA0010 /* MainView.swift in Sources */,
+				AA0011 /* DriveStatusView.swift in Sources */,
+				AA0012 /* InventoryGridView.swift in Sources */,
+				AA0019 /* InventoryListView.swift in Sources */,
+				AA0013 /* SlotCellView.swift in Sources */,
+				AA0014 /* OperationProgressView.swift in Sources */,
+				AA0015 /* BatchOperationSheet.swift in Sources */,
+				AA0018 /* CompatViews.swift in Sources */,
+				AA0016 /* ImagingService.swift in Sources */,
+				AA0017 /* MetadataService.swift in Sources */,
+				AA0020 /* sbp2.c in Sources */,
+				AA0021 /* scsi.c in Sources */,
+				AA0022 /* mount.c in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		AI0001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 10.15;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = macosx;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		AI0002 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 10.15;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				SDKROOT = macosx;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+			};
+			name = Release;
+		};
+		AI0003 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = VGPChangerApp/Resources/VGPChangerApp.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				HEADER_SEARCH_PATHS = "$(SRCROOT)/CChangerLib";
+				INFOPLIST_FILE = VGPChangerApp/Resources/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.example.VGPChangerApp;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_OBJC_BRIDGING_HEADER = "VGPChangerApp/Bridging/VGPChangerApp-Bridging-Header.h";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		AI0004 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = VGPChangerApp/Resources/VGPChangerApp.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				HEADER_SEARCH_PATHS = "$(SRCROOT)/CChangerLib";
+				INFOPLIST_FILE = VGPChangerApp/Resources/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.example.VGPChangerApp;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_OBJC_BRIDGING_HEADER = "VGPChangerApp/Bridging/VGPChangerApp-Bridging-Header.h";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		AG0001 /* Build configuration list for PBXNativeTarget "VGPChangerApp" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				AI0003 /* Debug */,
+				AI0004 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		AG0002 /* Build configuration list for PBXProject "VGPChangerApp" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				AI0001 /* Debug */,
+				AI0002 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = AH0001 /* Project object */;
+}
