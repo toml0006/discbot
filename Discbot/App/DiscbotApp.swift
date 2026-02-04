@@ -13,6 +13,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     static let shared = AppDelegate()
     let viewModel = ChangerViewModel()
     var window: NSWindow?
+    private var deviceObserver: NSObjectProtocol?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Check for macOS Tahoe (16.0+) which removed FireWire support
@@ -35,12 +36,29 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         window?.center()
         window?.makeKeyAndOrderFront(nil)
 
+        // Update window title when device info changes
+        deviceObserver = NotificationCenter.default.addObserver(
+            forName: NSNotification.Name("DeviceInfoChanged"),
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.updateWindowTitle()
+        }
+
         // Set up menu bar
         setupMenuBar()
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         return true
+    }
+
+    private func updateWindowTitle() {
+        if viewModel.isConnected, let vendor = viewModel.deviceVendor, let product = viewModel.deviceProduct {
+            window?.title = "Discbot - \(vendor) \(product)"
+        } else {
+            window?.title = "Discbot"
+        }
     }
 
     private func showTahoeWarning() {

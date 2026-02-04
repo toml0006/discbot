@@ -86,6 +86,7 @@ final class ChangerViewModel: ObservableObject {
                 DispatchQueue.main.async {
                     self.deviceVendor = info.vendor
                     self.deviceProduct = info.product
+                    NotificationCenter.default.post(name: NSNotification.Name("DeviceInfoChanged"), object: nil)
                 }
 
                 // Load initial inventory
