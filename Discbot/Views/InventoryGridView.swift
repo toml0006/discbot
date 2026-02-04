@@ -1,6 +1,6 @@
 //
 //  InventoryGridView.swift
-//  VGPChangerApp
+//  Discbot
 //
 //  Grid showing all 200 slots
 //

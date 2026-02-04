@@ -1,6 +1,6 @@
 //
 //  Slot.swift
-//  VGPChangerApp
+//  Discbot
 //
 //  Model representing a single storage slot in the changer
 //

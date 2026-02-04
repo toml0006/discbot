@@ -1,6 +1,6 @@
 //
 //  DriveStatus.swift
-//  VGPChangerApp
+//  Discbot
 //
 //  Represents the current state of the drive
 //

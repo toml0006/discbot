@@ -1,6 +1,6 @@
 //
 //  MainView.swift
-//  VGPChangerApp
+//  Discbot
 //
 //  Main application window
 //

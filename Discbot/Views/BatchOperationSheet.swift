@@ -1,6 +1,6 @@
 //
 //  BatchOperationSheet.swift
-//  VGPChangerApp
+//  Discbot
 //
 //  Sheet showing batch operation progress
 //

@@ -1,6 +1,6 @@
 //
 //  MountService.swift
-//  VGPChangerApp
+//  Discbot
 //
 //  Service for disc detection and mounting via DiskArbitration
 //

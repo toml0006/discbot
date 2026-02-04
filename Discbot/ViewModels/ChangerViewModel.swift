@@ -1,6 +1,6 @@
 //
 //  ChangerViewModel.swift
-//  VGPChangerApp
+//  Discbot
 //
 //  Main view model for the application
 //

@@ -1,6 +1,6 @@
 //
 //  DriveStatusView.swift
-//  VGPChangerApp
+//  Discbot
 //
 //  Shows device info and current drive status
 //

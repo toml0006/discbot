@@ -1,6 +1,6 @@
 //
 //  ChangerService.swift
-//  VGPChangerApp
+//  Discbot
 //
 //  Service for communicating with the DVD changer (thread-safe)
 //

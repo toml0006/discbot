@@ -1,6 +1,6 @@
 //
-//  VGPChangerApp.swift
-//  VGPChangerApp
+//  Discbot.swift
+//  Discbot
 //
 //  Main application entry point
 //

@@ -1,6 +1,6 @@
 //
 //  ImagingService.swift
-//  VGPChangerApp
+//  Discbot
 //
 //  Service for creating disc images
 //

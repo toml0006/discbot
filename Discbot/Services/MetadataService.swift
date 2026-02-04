@@ -1,6 +1,6 @@
 //
 //  MetadataService.swift
-//  VGPChangerApp
+//  Discbot
 //
 //  Service for looking up disc metadata from online services
 //
@@ -48,7 +48,7 @@ final class MetadataService {
         }
 
         var request = URLRequest(url: url)
-        request.setValue("VGPChangerApp/1.0 (contact@example.com)", forHTTPHeaderField: "User-Agent")
+        request.setValue("Discbot/1.0 (contact@example.com)", forHTTPHeaderField: "User-Agent")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.timeoutInterval = 30
 

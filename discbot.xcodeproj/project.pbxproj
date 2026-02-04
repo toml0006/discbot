@@ -9,7 +9,7 @@
 /* Begin PBXBuildFile section */
 		/* App Swift files */
 		AA0000 /* main.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0000; };
-		AA0001 /* VGPChangerApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0001; };
+		AA0001 /* Discbot.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0001; };
 		AA0002 /* Slot.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0002; };
 		AA0003 /* DriveStatus.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0003; };
 		AA0004 /* DiscMetadata.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0004; };
@@ -40,10 +40,10 @@
 
 /* Begin PBXFileReference section */
 		/* App target */
-		AC0001 /* VGPChangerApp.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = VGPChangerApp.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		AC0001 /* Discbot.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Discbot.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		/* Swift files */
 		AB0000 /* main.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
-		AB0001 /* VGPChangerApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VGPChangerApp.swift; sourceTree = "<group>"; };
+		AB0001 /* Discbot.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Discbot.swift; sourceTree = "<group>"; };
 		AB0002 /* Slot.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Slot.swift; sourceTree = "<group>"; };
 		AB0003 /* DriveStatus.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DriveStatus.swift; sourceTree = "<group>"; };
 		AB0004 /* DiscMetadata.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiscMetadata.swift; sourceTree = "<group>"; };
@@ -70,10 +70,10 @@
 		AB0024 /* scsi.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = scsi.h; sourceTree = "<group>"; };
 		AB0025 /* mount.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = mount.h; sourceTree = "<group>"; };
 		/* Bridging header */
-		AB0026 /* VGPChangerApp-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "VGPChangerApp-Bridging-Header.h"; sourceTree = "<group>"; };
+		AB0026 /* Discbot-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "Discbot-Bridging-Header.h"; sourceTree = "<group>"; };
 		/* Resources */
 		AB0027 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
-		AB0028 /* VGPChangerApp.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = VGPChangerApp.entitlements; sourceTree = "<group>"; };
+		AB0028 /* Discbot.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Discbot.entitlements; sourceTree = "<group>"; };
 		/* Frameworks */
 		AB0030 /* CoreFoundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreFoundation.framework; path = System/Library/Frameworks/CoreFoundation.framework; sourceTree = SDKROOT; };
 		AB0031 /* IOKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = IOKit.framework; path = System/Library/Frameworks/IOKit.framework; sourceTree = SDKROOT; };
@@ -97,14 +97,14 @@
 		AE0001 = {
 			isa = PBXGroup;
 			children = (
-				AE0002 /* VGPChangerApp */,
+				AE0002 /* Discbot */,
 				AE0003 /* CChangerLib */,
 				AE0004 /* Frameworks */,
 				AE0005 /* Products */,
 			);
 			sourceTree = "<group>";
 		};
-		AE0002 /* VGPChangerApp */ = {
+		AE0002 /* Discbot */ = {
 			isa = PBXGroup;
 			children = (
 				AE0010 /* App */,
@@ -115,7 +115,7 @@
 				AE0015 /* Bridging */,
 				AE0016 /* Resources */,
 			);
-			path = VGPChangerApp;
+			path = Discbot;
 			sourceTree = "<group>";
 		};
 		AE0003 /* CChangerLib */ = {
@@ -144,7 +144,7 @@
 		AE0005 /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				AC0001 /* VGPChangerApp.app */,
+				AC0001 /* Discbot.app */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -153,7 +153,7 @@
 			isa = PBXGroup;
 			children = (
 				AB0000 /* main.swift */,
-				AB0001 /* VGPChangerApp.swift */,
+				AB0001 /* Discbot.swift */,
 			);
 			path = App;
 			sourceTree = "<group>";
@@ -207,7 +207,7 @@
 		AE0015 /* Bridging */ = {
 			isa = PBXGroup;
 			children = (
-				AB0026 /* VGPChangerApp-Bridging-Header.h */,
+				AB0026 /* Discbot-Bridging-Header.h */,
 			);
 			path = Bridging;
 			sourceTree = "<group>";
@@ -216,7 +216,7 @@
 			isa = PBXGroup;
 			children = (
 				AB0027 /* Info.plist */,
-				AB0028 /* VGPChangerApp.entitlements */,
+				AB0028 /* Discbot.entitlements */,
 			);
 			path = Resources;
 			sourceTree = "<group>";
@@ -224,9 +224,9 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
-		AF0001 /* VGPChangerApp */ = {
+		AF0001 /* Discbot */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = AG0001 /* Build configuration list for PBXNativeTarget "VGPChangerApp" */;
+			buildConfigurationList = AG0001 /* Build configuration list for PBXNativeTarget "Discbot" */;
 			buildPhases = (
 				AF0010 /* Sources */,
 				AD0001 /* Frameworks */,
@@ -236,9 +236,9 @@
 			);
 			dependencies = (
 			);
-			name = VGPChangerApp;
-			productName = VGPChangerApp;
-			productReference = AC0001 /* VGPChangerApp.app */;
+			name = Discbot;
+			productName = Discbot;
+			productReference = AC0001 /* Discbot.app */;
 			productType = "com.apple.product-type.application";
 		};
 /* End PBXNativeTarget section */
@@ -255,7 +255,7 @@
 					};
 				};
 			};
-			buildConfigurationList = AG0002 /* Build configuration list for PBXProject "VGPChangerApp" */;
+			buildConfigurationList = AG0002 /* Build configuration list for PBXProject "Discbot" */;
 			compatibilityVersion = "Xcode 11.0";
 			developmentRegion = en;
 			hasScannedForEncodings = 0;
@@ -268,7 +268,7 @@
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
-				AF0001 /* VGPChangerApp */,
+				AF0001 /* Discbot */,
 			);
 		};
 /* End PBXProject section */
@@ -289,7 +289,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				AA0000 /* main.swift in Sources */,
-				AA0001 /* VGPChangerApp.swift in Sources */,
+				AA0001 /* Discbot.swift in Sources */,
 				AA0002 /* Slot.swift in Sources */,
 				AA0003 /* DriveStatus.swift in Sources */,
 				AA0004 /* DiscMetadata.swift in Sources */,
@@ -434,20 +434,20 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				CODE_SIGN_ENTITLEMENTS = VGPChangerApp/Resources/VGPChangerApp.entitlements;
+				CODE_SIGN_ENTITLEMENTS = Discbot/Resources/Discbot.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
 				HEADER_SEARCH_PATHS = "$(SRCROOT)/CChangerLib";
-				INFOPLIST_FILE = VGPChangerApp/Resources/Info.plist;
+				INFOPLIST_FILE = Discbot/Resources/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.example.VGPChangerApp;
+				PRODUCT_BUNDLE_IDENTIFIER = com.example.Discbot;
 				PRODUCT_NAME = "$(TARGET_NAME)";
-				SWIFT_OBJC_BRIDGING_HEADER = "VGPChangerApp/Bridging/VGPChangerApp-Bridging-Header.h";
+				SWIFT_OBJC_BRIDGING_HEADER = "Discbot/Bridging/Discbot-Bridging-Header.h";
 				SWIFT_VERSION = 5.0;
 			};
 			name = Debug;
@@ -456,20 +456,20 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				CODE_SIGN_ENTITLEMENTS = VGPChangerApp/Resources/VGPChangerApp.entitlements;
+				CODE_SIGN_ENTITLEMENTS = Discbot/Resources/Discbot.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
 				HEADER_SEARCH_PATHS = "$(SRCROOT)/CChangerLib";
-				INFOPLIST_FILE = VGPChangerApp/Resources/Info.plist;
+				INFOPLIST_FILE = Discbot/Resources/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.example.VGPChangerApp;
+				PRODUCT_BUNDLE_IDENTIFIER = com.example.Discbot;
 				PRODUCT_NAME = "$(TARGET_NAME)";
-				SWIFT_OBJC_BRIDGING_HEADER = "VGPChangerApp/Bridging/VGPChangerApp-Bridging-Header.h";
+				SWIFT_OBJC_BRIDGING_HEADER = "Discbot/Bridging/Discbot-Bridging-Header.h";
 				SWIFT_VERSION = 5.0;
 			};
 			name = Release;
@@ -477,7 +477,7 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
-		AG0001 /* Build configuration list for PBXNativeTarget "VGPChangerApp" */ = {
+		AG0001 /* Build configuration list for PBXNativeTarget "Discbot" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				AI0003 /* Debug */,
@@ -486,7 +486,7 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
-		AG0002 /* Build configuration list for PBXProject "VGPChangerApp" */ = {
+		AG0002 /* Build configuration list for PBXProject "Discbot" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				AI0001 /* Debug */,

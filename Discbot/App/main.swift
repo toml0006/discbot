@@ -1,6 +1,6 @@
 //
 //  main.swift
-//  VGPChangerApp
+//  Discbot
 //
 //  Application entry point - handles both macOS 10.15 and 11+
 //

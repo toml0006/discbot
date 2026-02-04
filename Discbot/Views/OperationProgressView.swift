@@ -1,6 +1,6 @@
 //
 //  OperationProgressView.swift
-//  VGPChangerApp
+//  Discbot
 //
 //  Overlay shown during long-running operations
 //

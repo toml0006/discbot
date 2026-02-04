@@ -1,6 +1,6 @@
 //
 //  SlotCellView.swift
-//  VGPChangerApp
+//  Discbot
 //
 //  Individual slot cell in the inventory grid
 //

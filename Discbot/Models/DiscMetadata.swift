@@ -1,6 +1,6 @@
 //
 //  DiscMetadata.swift
-//  VGPChangerApp
+//  Discbot
 //
 //  Metadata for a disc (from MusicBrainz, CDDB, or filesystem)
 //

@@ -1,6 +1,6 @@
 //
 //  CompatViews.swift
-//  VGPChangerApp
+//  Discbot
 //
 //  macOS 10.15 compatible replacements for newer SwiftUI views
 //

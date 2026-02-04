@@ -1,6 +1,6 @@
 //
 //  InventoryListView.swift
-//  VGPChangerApp
+//  Discbot
 //
 //  List view showing all slots in a table format
 //

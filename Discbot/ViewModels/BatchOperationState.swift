@@ -1,6 +1,6 @@
 //
 //  BatchOperationState.swift
-//  VGPChangerApp
+//  Discbot
 //
 //  State for batch operations (Load All, Image All)
 //

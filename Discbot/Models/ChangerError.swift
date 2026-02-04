@@ -1,6 +1,6 @@
 //
 //  ChangerError.swift
-//  VGPChangerApp
+//  Discbot
 //
 //  Error types for changer operations
 //
