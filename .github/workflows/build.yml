@@ -1,0 +1,28 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: macos-15  # Sequoia - last version with FireWire support
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build
+        run: |
+          xcodebuild -project discbot.xcodeproj \
+            -scheme Discbot \
+            -destination 'platform=macOS' \
+            -configuration Release \
+            build
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Discbot
+          path: build/Release/Discbot.app
+          if-no-files-found: ignore
