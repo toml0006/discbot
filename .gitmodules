@@ -1,0 +1,3 @@
+[submodule "mchanger"]
+	path = mchanger
+	url = https://github.com/toml0006/mchanger.git

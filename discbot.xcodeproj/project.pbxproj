@@ -28,10 +28,8 @@
 		AA0015 /* BatchOperationSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0015; };
 		AA0018 /* CompatViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0018; };
 		AA0019 /* InventoryListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0019; };
-		/* C library files */
-		AA0020 /* sbp2.c in Sources */ = {isa = PBXBuildFile; fileRef = AB0020; };
-		AA0021 /* scsi.c in Sources */ = {isa = PBXBuildFile; fileRef = AB0021; };
-		AA0022 /* mount.c in Sources */ = {isa = PBXBuildFile; fileRef = AB0022; };
+		/* mchanger library */
+		AA0020 /* mchanger.c in Sources */ = {isa = PBXBuildFile; fileRef = AB0020; };
 		/* Frameworks */
 		AA0030 /* CoreFoundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AB0030; };
 		AA0031 /* IOKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AB0031; };
@@ -62,13 +60,9 @@
 		AB0015 /* BatchOperationSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BatchOperationSheet.swift; sourceTree = "<group>"; };
 		AB0018 /* CompatViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CompatViews.swift; sourceTree = "<group>"; };
 		AB0019 /* InventoryListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InventoryListView.swift; sourceTree = "<group>"; };
-		/* C library files */
-		AB0020 /* sbp2.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = sbp2.c; sourceTree = "<group>"; };
-		AB0021 /* scsi.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = scsi.c; sourceTree = "<group>"; };
-		AB0022 /* mount.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = mount.c; sourceTree = "<group>"; };
-		AB0023 /* sbp2.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = sbp2.h; sourceTree = "<group>"; };
-		AB0024 /* scsi.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = scsi.h; sourceTree = "<group>"; };
-		AB0025 /* mount.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = mount.h; sourceTree = "<group>"; };
+		/* mchanger library */
+		AB0020 /* mchanger.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = mchanger.c; sourceTree = "<group>"; };
+		AB0021 /* mchanger.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = mchanger.h; sourceTree = "<group>"; };
 		/* Bridging header */
 		AB0026 /* Discbot-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "Discbot-Bridging-Header.h"; sourceTree = "<group>"; };
 		/* Resources */
@@ -98,7 +92,7 @@
 			isa = PBXGroup;
 			children = (
 				AE0002 /* Discbot */,
-				AE0003 /* CChangerLib */,
+				AE0003 /* mchanger */,
 				AE0004 /* Frameworks */,
 				AE0005 /* Products */,
 			);
@@ -118,17 +112,13 @@
 			path = Discbot;
 			sourceTree = "<group>";
 		};
-		AE0003 /* CChangerLib */ = {
+		AE0003 /* mchanger */ = {
 			isa = PBXGroup;
 			children = (
-				AB0020 /* sbp2.c */,
-				AB0023 /* sbp2.h */,
-				AB0021 /* scsi.c */,
-				AB0024 /* scsi.h */,
-				AB0022 /* mount.c */,
-				AB0025 /* mount.h */,
+				AB0020 /* mchanger.c */,
+				AB0021 /* mchanger.h */,
 			);
-			path = CChangerLib;
+			path = mchanger;
 			sourceTree = "<group>";
 		};
 		AE0004 /* Frameworks */ = {
@@ -308,9 +298,7 @@
 				AA0018 /* CompatViews.swift in Sources */,
 				AA0016 /* ImagingService.swift in Sources */,
 				AA0017 /* MetadataService.swift in Sources */,
-				AA0020 /* sbp2.c in Sources */,
-				AA0021 /* scsi.c in Sources */,
-				AA0022 /* mount.c in Sources */,
+				AA0020 /* mchanger.c in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -359,6 +347,7 @@
 				GCC_OPTIMIZATION_LEVEL = 0;
 				GCC_PREPROCESSOR_DEFINITIONS = (
 					"DEBUG=1",
+					"MCHANGER_NO_MAIN=1",
 					"$(inherited)",
 				);
 				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
@@ -415,6 +404,10 @@
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				GCC_C_LANGUAGE_STANDARD = gnu11;
 				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"MCHANGER_NO_MAIN=1",
+					"$(inherited)",
+				);
 				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
 				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
 				GCC_WARN_UNDECLARED_SELECTOR = YES;
@@ -438,7 +431,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
-				HEADER_SEARCH_PATHS = "$(SRCROOT)/CChangerLib";
+				HEADER_SEARCH_PATHS = "$(SRCROOT)/mchanger";
 				INFOPLIST_FILE = Discbot/Resources/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -460,7 +453,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
-				HEADER_SEARCH_PATHS = "$(SRCROOT)/CChangerLib";
+				HEADER_SEARCH_PATHS = "$(SRCROOT)/mchanger";
 				INFOPLIST_FILE = Discbot/Resources/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",

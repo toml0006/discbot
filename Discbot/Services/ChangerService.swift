@@ -2,29 +2,21 @@
 //  ChangerService.swift
 //  Discbot
 //
-//  Service for communicating with the DVD changer (thread-safe)
+//  Service for communicating with the DVD changer using mchanger library
 //
 
 import Foundation
 
 /// Thread-safe service for communicating with the DVD changer
 final class ChangerService {
-    private var connection: UnsafeMutablePointer<ChangerConnection>?
-    private var elementMap: ElementMapWrapper?
+    private var handle: OpaquePointer?
+    private var elementMap: MChangerElementMap?
     private let lock = NSLock()
 
     struct ChangerDeviceInfo {
         let vendor: String
         let product: String
         let revision: String
-        let deviceType: UInt8
-    }
-
-    struct ElementMapWrapper {
-        let transport: UInt16
-        let slots: [UInt16]
-        let drive: UInt16
-        let ie: UInt16?
     }
 
     /// Connect to the DVD changer (blocking)
@@ -32,22 +24,15 @@ final class ChangerService {
         lock.lock()
         defer { lock.unlock() }
 
-        if connection != nil {
+        if handle != nil {
             return // Already connected
         }
 
-        // Allocate connection struct
-        let conn = UnsafeMutablePointer<ChangerConnection>.allocate(capacity: 1)
-        conn.initialize(to: ChangerConnection())
-
-        let result = changer_connect(conn)
-
-        if result != 0 {
-            conn.deallocate()
+        guard let h = mchanger_open(nil) else {
             throw ChangerError.connectionFailed
         }
 
-        connection = conn
+        handle = h
 
         // Load element map
         try loadElementMapLocked()
@@ -58,11 +43,15 @@ final class ChangerService {
         lock.lock()
         defer { lock.unlock() }
 
-        guard let conn = connection else { return }
-        changer_disconnect(conn)
-        conn.deallocate()
-        connection = nil
-        elementMap = nil
+        if let h = handle {
+            mchanger_close(h)
+            handle = nil
+        }
+
+        if var map = elementMap {
+            mchanger_free_element_map(&map)
+            elementMap = nil
+        }
     }
 
     /// Get device info via INQUIRY (blocking)
@@ -70,131 +59,83 @@ final class ChangerService {
         lock.lock()
         defer { lock.unlock() }
 
-        guard let conn = connection else {
+        guard let h = handle else {
             throw ChangerError.notConnected
         }
 
-        var info = DeviceInfo()
-        let result = scsi_inquiry(conn, &info)
+        var vendor = [CChar](repeating: 0, count: 64)
+        var product = [CChar](repeating: 0, count: 64)
+        var revision = [CChar](repeating: 0, count: 64)
 
-        if result != 0 {
+        let result = mchanger_inquiry(h, &vendor, 64, &product, 64, &revision, 64)
+
+        if result != MCHANGER_OK {
             throw ChangerError.commandFailed("INQUIRY")
         }
 
         return ChangerDeviceInfo(
-            vendor: String(cString: &info.vendor.0).trimmingCharacters(in: .whitespaces),
-            product: String(cString: &info.product.0).trimmingCharacters(in: .whitespaces),
-            revision: String(cString: &info.revision.0).trimmingCharacters(in: .whitespaces),
-            deviceType: info.device_type
+            vendor: String(cString: vendor).trimmingCharacters(in: .whitespaces),
+            product: String(cString: product).trimmingCharacters(in: .whitespaces),
+            revision: String(cString: revision).trimmingCharacters(in: .whitespaces)
         )
     }
 
-    /// Load element map from MODE SENSE (must hold lock)
+    /// Load element map (must hold lock)
     private func loadElementMapLocked() throws {
-        guard let conn = connection else {
+        guard let h = handle else {
             throw ChangerError.notConnected
         }
 
-        var map = ElementMap()
-        let result = scsi_mode_sense_element(conn, &map)
-
-        if result != 0 {
-            throw ChangerError.commandFailed("MODE SENSE")
+        // Free existing map if any
+        if var map = elementMap {
+            mchanger_free_element_map(&map)
         }
 
-        // Copy slot addresses to Swift array
-        var slots: [UInt16] = []
-        if map.slot_count > 0 && map.slots != nil {
-            for i in 0..<map.slot_count {
-                slots.append(map.slots[i])
-            }
+        var map = MChangerElementMap()
+        let result = mchanger_get_element_map(h, &map)
+
+        if result != MCHANGER_OK {
+            throw ChangerError.commandFailed("GET ELEMENT MAP")
         }
 
-        elementMap = ElementMapWrapper(
-            transport: map.transport,
-            slots: slots,
-            drive: map.drive,
-            ie: map.has_ie ? map.ie : nil
-        )
+        elementMap = map
 
-        print("Element map loaded: transport=\(map.transport), drive=\(map.drive), slots=\(slots.count) (\(slots.first ?? 0)-\(slots.last ?? 0)), ie=\(map.has_ie ? String(map.ie) : "none")")
-
-        element_map_free(&map)
+        print("Element map loaded: \(map.slot_count) slots, \(map.drive_count) drives, \(map.ie_count) I/E slots")
     }
 
     /// Get status of all slots (blocking)
-    /// Note: VGP-XL1B only returns ~40 elements per query, so we read in chunks
     func getSlotStatus() throws -> [Slot] {
         lock.lock()
         defer { lock.unlock() }
 
-        guard let conn = connection else {
+        guard let h = handle else {
             throw ChangerError.notConnected
         }
         guard let map = elementMap else {
             throw ChangerError.commandFailed("No element map")
         }
 
-        let totalCount = map.slots.count
-        guard totalCount > 0 else {
-            return []
-        }
+        var slots: [Slot] = []
 
-        // Read in chunks of 50 (VGP-XL1B returns max ~40 per query)
-        let chunkSize = 50
-        var allSlots: [Slot] = []
-        var slotsByAddress: [UInt16: Slot] = [:]
+        for i in 0..<map.slot_count {
+            let slotNumber = Int(i) + 1
+            var status = MChangerElementStatus()
 
-        let statuses = UnsafeMutablePointer<ElementStatus>.allocate(capacity: chunkSize)
-        defer { statuses.deallocate() }
+            let result = mchanger_get_slot_status(h, Int32(slotNumber), &status)
 
-        var offset = 0
-        while offset < totalCount {
-            let remaining = totalCount - offset
-            let count = min(remaining, chunkSize)
-            let startAddr = map.slots[offset]
-
-            let result = scsi_read_element_status(
-                conn,
-                UInt8(ELEM_STORAGE),
-                startAddr,
-                UInt16(count),
-                statuses,
-                chunkSize
-            )
-
-            if result < 0 {
-                throw ChangerError.commandFailed("READ ELEMENT STATUS")
-            }
-
-            let resultCount = Int(result)
-            for i in 0..<resultCount {
-                let s = statuses[i]
-                // Find slot number from address
-                if let slotIndex = map.slots.firstIndex(of: s.address) {
-                    let slot = Slot(
-                        id: slotIndex + 1,
-                        address: s.address,
-                        isFull: s.full,
-                        isInDrive: false,
-                        hasException: s.except
-                    )
-                    slotsByAddress[s.address] = slot
-                }
-            }
-
-            offset += count
-        }
-
-        // Build final array, filling in any missing slots as empty
-        for i in 0..<totalCount {
-            let addr = map.slots[i]
-            if let slot = slotsByAddress[addr] {
-                allSlots.append(slot)
+            if result == MCHANGER_OK {
+                slots.append(Slot(
+                    id: slotNumber,
+                    address: status.address,
+                    isFull: status.full,
+                    isInDrive: false,
+                    hasException: status.except
+                ))
             } else {
-                allSlots.append(Slot(
-                    id: i + 1,
-                    address: addr,
+                // On error, add empty slot placeholder
+                slots.append(Slot(
+                    id: slotNumber,
+                    address: map.slot_addrs?[i] ?? 0,
                     isFull: false,
                     isInDrive: false,
                     hasException: false
@@ -202,7 +143,7 @@ final class ChangerService {
             }
         }
 
-        return allSlots.sorted { $0.id < $1.id }
+        return slots.sorted { $0.id < $1.id }
     }
 
     /// Get drive status (blocking)
@@ -210,54 +151,35 @@ final class ChangerService {
         lock.lock()
         defer { lock.unlock() }
 
-        guard let conn = connection else {
+        guard let h = handle else {
             throw ChangerError.notConnected
         }
         guard let map = elementMap else {
             throw ChangerError.commandFailed("No element map")
         }
 
-        let status = UnsafeMutablePointer<ElementStatus>.allocate(capacity: 1)
-        defer { status.deallocate() }
+        var status = MChangerElementStatus()
+        let result = mchanger_get_drive_status(h, 1, &status)
 
-        print("getDriveStatus: querying drive at address \(map.drive)")
-
-        let result = scsi_read_element_status(
-            conn,
-            UInt8(ELEM_DRIVE),
-            map.drive,
-            1,
-            status,
-            1
-        )
-
-        print("getDriveStatus: READ ELEMENT STATUS returned \(result)")
-
-        if result < 0 {
-            throw ChangerError.commandFailed("READ ELEMENT STATUS (drive)")
-        }
-
-        guard result > 0 else {
-            print("getDriveStatus: no elements returned, assuming empty")
+        if result != MCHANGER_OK {
+            print("getDriveStatus: mchanger_get_drive_status returned \(result)")
             return (false, nil)
         }
 
-        print("getDriveStatus: address=\(status.pointee.address), full=\(status.pointee.full), source_valid=\(status.pointee.source_valid), source=\(status.pointee.source)")
+        print("getDriveStatus: full=\(status.full), valid_source=\(status.valid_source), source=\(status.source_addr)")
 
-        let sourceSlot: Int?
-        if status.pointee.source_valid {
+        var sourceSlot: Int? = nil
+        if status.valid_source && map.slot_addrs != nil {
             // Find slot number from source address
-            if let idx = map.slots.firstIndex(of: status.pointee.source) {
-                sourceSlot = idx + 1
-            } else {
-                sourceSlot = nil
+            for i in 0..<map.slot_count {
+                if map.slot_addrs[i] == status.source_addr {
+                    sourceSlot = Int(i) + 1
+                    break
+                }
             }
-        } else {
-            sourceSlot = nil
         }
 
-        print("getDriveStatus: returning hasDisc=\(status.pointee.full), sourceSlot=\(sourceSlot ?? -1)")
-        return (status.pointee.full, sourceSlot)
+        return (status.full, sourceSlot)
     }
 
     /// Load disc from slot to drive (blocking, takes 60-120 seconds)
@@ -265,32 +187,28 @@ final class ChangerService {
         lock.lock()
         defer { lock.unlock() }
 
-        guard let conn = connection else {
+        guard let h = handle else {
             throw ChangerError.notConnected
         }
         guard let map = elementMap else {
             throw ChangerError.commandFailed("No element map")
         }
-        guard slotNumber >= 1 && slotNumber <= map.slots.count else {
+        guard slotNumber >= 1 && slotNumber <= map.slot_count else {
             throw ChangerError.slotEmpty(slotNumber)
         }
 
-        let slotAddr = map.slots[slotNumber - 1]
+        print("Loading slot \(slotNumber) into drive")
+        let result = mchanger_load_slot(h, Int32(slotNumber), 1)
 
-        print("MOVE MEDIUM: transport=\(map.transport), source=\(slotAddr), dest=\(map.drive)")
-        let result = scsi_move_medium(conn, map.transport, slotAddr, map.drive)
-
-        if result != 0 {
-            var sense = scsi_get_last_sense()
-            let msg = String(cString: scsi_sense_string(&sense))
-            print("MOVE MEDIUM failed: \(msg), sense valid=\(sense.valid)")
-
-            // Check for "Medium destination full" (sense 05/3b/0d) - means drive has disc
-            // This happens because VGP-XL1B doesn't support READ ELEMENT STATUS for drive
-            if msg.contains("destination full") {
-                throw ChangerError.driveNotEmpty
-            }
-            throw ChangerError.moveFailed(msg)
+        switch result {
+        case MCHANGER_OK:
+            return
+        case MCHANGER_ERR_EMPTY:
+            throw ChangerError.slotEmpty(slotNumber)
+        case MCHANGER_ERR_BUSY:
+            throw ChangerError.driveNotEmpty
+        default:
+            throw ChangerError.moveFailed("mchanger_load_slot returned \(result)")
         }
     }
 
@@ -299,63 +217,28 @@ final class ChangerService {
         lock.lock()
         defer { lock.unlock() }
 
-        guard let conn = connection else {
+        guard let h = handle else {
             throw ChangerError.notConnected
         }
         guard let map = elementMap else {
             throw ChangerError.commandFailed("No element map")
         }
-        guard slotNumber >= 1 && slotNumber <= map.slots.count else {
+        guard slotNumber >= 1 && slotNumber <= map.slot_count else {
             throw ChangerError.slotOccupied(slotNumber)
         }
 
-        let slotAddr = map.slots[slotNumber - 1]
+        print("Unloading drive to slot \(slotNumber)")
+        let result = mchanger_unload_drive(h, Int32(slotNumber), 1)
 
-        print("MOVE MEDIUM: transport=\(map.transport), source=\(map.drive), dest=\(slotAddr)")
-        var result = scsi_move_medium(conn, map.transport, map.drive, slotAddr)
-
-        if result != 0 {
-            var sense = scsi_get_last_sense()
-            let msg = String(cString: scsi_sense_string(&sense))
-            print("MOVE MEDIUM failed: \(msg), sense valid=\(sense.valid), sense_key=\(sense.sense_key)")
-
-            // Check for specific SCSI errors
-            if msg.contains("source empty") {
-                throw ChangerError.driveEmpty
-            }
-            if msg.contains("destination full") {
-                throw ChangerError.slotOccupied(slotNumber)
-            }
-
-            // VGP-XL1B quirk: if sense is "No sense" (00/00/00), the changer's
-            // internal state may be out of sync. Run INITIALIZE ELEMENT STATUS
-            // to rescan and then retry.
-            if sense.sense_key == 0 && sense.asc == 0 && sense.ascq == 0 {
-                print("Got 'No sense' error - changer state may be stale. Running INITIALIZE ELEMENT STATUS...")
-                let initResult = scsi_init_element_status(conn)
-                if initResult == 0 {
-                    // Wait for init to complete
-                    Thread.sleep(forTimeInterval: 5.0)
-
-                    print("INITIALIZE ELEMENT STATUS complete, retrying MOVE MEDIUM...")
-                    result = scsi_move_medium(conn, map.transport, map.drive, slotAddr)
-
-                    if result == 0 {
-                        print("MOVE MEDIUM succeeded after INITIALIZE ELEMENT STATUS")
-                        return
-                    }
-
-                    // Still failed - get new sense data
-                    sense = scsi_get_last_sense()
-                    let retryMsg = String(cString: scsi_sense_string(&sense))
-                    print("MOVE MEDIUM still failed after init: \(retryMsg)")
-                    throw ChangerError.moveFailed(retryMsg)
-                } else {
-                    print("INITIALIZE ELEMENT STATUS failed")
-                }
-            }
-
-            throw ChangerError.moveFailed(msg)
+        switch result {
+        case MCHANGER_OK:
+            return
+        case MCHANGER_ERR_EMPTY:
+            throw ChangerError.driveEmpty
+        case MCHANGER_ERR_BUSY:
+            throw ChangerError.slotOccupied(slotNumber)
+        default:
+            throw ChangerError.moveFailed("mchanger_unload_drive returned \(result)")
         }
     }
 
@@ -364,56 +247,42 @@ final class ChangerService {
         lock.lock()
         defer { lock.unlock() }
 
-        guard let conn = connection else {
+        guard handle != nil else {
             throw ChangerError.notConnected
         }
 
-        let result = scsi_init_element_status(conn)
-
-        if result != 0 {
-            throw ChangerError.commandFailed("INITIALIZE ELEMENT STATUS")
-        }
-
-        // Reload element map after scan
+        // Reload element map
         try loadElementMapLocked()
     }
 
-    /// Unload disc from slot to I/E slot for physical removal (blocking)
+    /// Eject disc to I/E slot for physical removal (blocking)
     func unloadToIE(_ slotNumber: Int) throws {
         lock.lock()
         defer { lock.unlock() }
 
-        guard let conn = connection else {
+        guard let h = handle else {
             throw ChangerError.notConnected
         }
         guard let map = elementMap else {
             throw ChangerError.commandFailed("No element map")
         }
-        guard let ieAddr = map.ie else {
+        guard map.ie_count > 0 else {
             throw ChangerError.commandFailed("Changer has no import/export slot")
         }
-        guard slotNumber >= 1 && slotNumber <= map.slots.count else {
+        guard slotNumber >= 1 && slotNumber <= map.slot_count else {
             throw ChangerError.slotEmpty(slotNumber)
         }
 
-        let slotAddr = map.slots[slotNumber - 1]
+        print("Ejecting slot \(slotNumber) to I/E slot")
+        let result = mchanger_eject(h, Int32(slotNumber), 1)
 
-        print("MOVE MEDIUM (eject to I/E): transport=\(map.transport), source=\(slotAddr), dest=\(ieAddr)")
-        let result = scsi_move_medium(conn, map.transport, slotAddr, ieAddr)
-
-        if result != 0 {
-            var sense = scsi_get_last_sense()
-            let msg = String(cString: scsi_sense_string(&sense))
-            print("MOVE MEDIUM failed: \(msg), sense valid=\(sense.valid)")
-
-            // Check for specific SCSI errors
-            if msg.contains("source empty") {
-                throw ChangerError.slotEmpty(slotNumber)
-            }
-            if msg.contains("destination full") {
-                throw ChangerError.commandFailed("I/E slot is full - remove disc first")
-            }
-            throw ChangerError.moveFailed(msg)
+        switch result {
+        case MCHANGER_OK:
+            return
+        case MCHANGER_ERR_EMPTY:
+            throw ChangerError.slotEmpty(slotNumber)
+        default:
+            throw ChangerError.moveFailed("mchanger_eject returned \(result)")
         }
     }
 
@@ -422,29 +291,31 @@ final class ChangerService {
         lock.lock()
         defer { lock.unlock() }
 
-        guard let conn = connection else {
+        guard let h = handle else {
             throw ChangerError.notConnected
         }
         guard let map = elementMap else {
             throw ChangerError.commandFailed("No element map")
         }
-        guard let ieAddr = map.ie else {
+        guard map.ie_count > 0, let ieAddrs = map.ie_addrs else {
             throw ChangerError.commandFailed("Changer has no import/export slot")
         }
-        guard slotNumber >= 1 && slotNumber <= map.slots.count else {
+        guard slotNumber >= 1 && slotNumber <= map.slot_count, let slotAddrs = map.slot_addrs else {
             throw ChangerError.slotOccupied(slotNumber)
         }
+        guard let transportAddrs = map.transport_addrs, map.transport_count > 0 else {
+            throw ChangerError.commandFailed("No transport element")
+        }
 
-        let slotAddr = map.slots[slotNumber - 1]
+        let slotAddr = slotAddrs[slotNumber - 1]
+        let ieAddr = ieAddrs[0]
+        let transport = transportAddrs[0]
 
-        print("MOVE MEDIUM (import): transport=\(map.transport), source=\(ieAddr), dest=\(slotAddr)")
-        let result = scsi_move_medium(conn, map.transport, ieAddr, slotAddr)
+        print("MOVE MEDIUM (import): transport=\(transport), source=\(ieAddr), dest=\(slotAddr)")
+        let result = mchanger_move_medium(h, transport, ieAddr, slotAddr)
 
-        if result != 0 {
-            var sense = scsi_get_last_sense()
-            let msg = String(cString: scsi_sense_string(&sense))
-            print("MOVE MEDIUM failed: \(msg), sense valid=\(sense.valid)")
-            throw ChangerError.moveFailed(msg)
+        if result != MCHANGER_OK {
+            throw ChangerError.moveFailed("mchanger_move_medium returned \(result)")
         }
     }
 
@@ -453,31 +324,37 @@ final class ChangerService {
         lock.lock()
         defer { lock.unlock() }
 
-        guard let conn = connection else {
+        guard let h = handle else {
             throw ChangerError.notConnected
         }
         guard let map = elementMap else {
             throw ChangerError.commandFailed("No element map")
         }
-        guard let ieAddr = map.ie else {
+        guard map.ie_count > 0, let ieAddrs = map.ie_addrs else {
             throw ChangerError.commandFailed("Changer has no import/export slot")
         }
+        guard let driveAddrs = map.drive_addrs, map.drive_count > 0 else {
+            throw ChangerError.commandFailed("No drive element")
+        }
+        guard let transportAddrs = map.transport_addrs, map.transport_count > 0 else {
+            throw ChangerError.commandFailed("No transport element")
+        }
 
-        print("MOVE MEDIUM (load from I/E): transport=\(map.transport), source=\(ieAddr), dest=\(map.drive)")
-        let result = scsi_move_medium(conn, map.transport, ieAddr, map.drive)
+        let driveAddr = driveAddrs[0]
+        let ieAddr = ieAddrs[0]
+        let transport = transportAddrs[0]
 
-        if result != 0 {
-            var sense = scsi_get_last_sense()
-            let msg = String(cString: scsi_sense_string(&sense))
-            print("MOVE MEDIUM failed: \(msg), sense valid=\(sense.valid)")
+        print("MOVE MEDIUM (load from I/E): transport=\(transport), source=\(ieAddr), dest=\(driveAddr)")
+        let result = mchanger_move_medium(h, transport, ieAddr, driveAddr)
 
-            if msg.contains("source empty") {
+        if result != MCHANGER_OK {
+            if result == MCHANGER_ERR_EMPTY {
                 throw ChangerError.commandFailed("I/E slot is empty")
             }
-            if msg.contains("destination full") {
+            if result == MCHANGER_ERR_BUSY {
                 throw ChangerError.driveNotEmpty
             }
-            throw ChangerError.moveFailed(msg)
+            throw ChangerError.moveFailed("mchanger_move_medium returned \(result)")
         }
     }
 
@@ -485,20 +362,20 @@ final class ChangerService {
     var hasIESlot: Bool {
         lock.lock()
         defer { lock.unlock() }
-        return elementMap?.ie != nil
+        return (elementMap?.ie_count ?? 0) > 0
     }
 
     /// Get slot count
     var slotCount: Int {
         lock.lock()
         defer { lock.unlock() }
-        return elementMap?.slots.count ?? 0
+        return Int(elementMap?.slot_count ?? 0)
     }
 
     /// Check if connected
     var isConnected: Bool {
         lock.lock()
         defer { lock.unlock() }
-        return connection != nil
+        return handle != nil
     }
 }

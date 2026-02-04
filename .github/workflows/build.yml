@@ -11,6 +11,8 @@ jobs:
     runs-on: macos-15  # Sequoia - last version with FireWire support
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: true
 
       - name: Build
         run: |
