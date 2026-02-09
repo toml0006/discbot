@@ -43,6 +43,37 @@ struct SlotCellView: View {
                 .shadow(color: shadowColor, radius: isSelected ? 4 : 2, x: 0, y: 1)
 
             indicatorIcon
+
+            // Backup status badge
+            if slot.isFull {
+                backupBadge
+                    .offset(x: indicatorSize * 0.35, y: indicatorSize * 0.35)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var backupBadge: some View {
+        let badgeSize = max(10, indicatorSize * 0.4)
+        switch slot.backupStatus {
+        case .backedUp:
+            ZStack {
+                Circle()
+                    .fill(Color.blue)
+                    .frame(width: badgeSize, height: badgeSize)
+                SFSymbol(name: "checkmark", size: badgeSize * 0.6)
+                    .foregroundColor(.white)
+            }
+        case .failed:
+            ZStack {
+                Circle()
+                    .fill(Color.red)
+                    .frame(width: badgeSize, height: badgeSize)
+                SFSymbol(name: "xmark", size: badgeSize * 0.6)
+                    .foregroundColor(.white)
+            }
+        case .notBackedUp:
+            EmptyView()
         }
     }
 
@@ -121,6 +152,16 @@ struct SlotCellView: View {
         }
         if slot.hasException {
             text += " - Exception"
+        }
+        switch slot.backupStatus {
+        case .backedUp(let date):
+            let formatter = DateFormatter()
+            formatter.dateStyle = .short
+            text += " - Backed up \(formatter.string(from: date))"
+        case .failed:
+            text += " - Backup failed"
+        case .notBackedUp:
+            break
         }
         return text
     }

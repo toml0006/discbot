@@ -25,6 +25,7 @@ final class ChangerViewModel: ObservableObject {
     // Inventory
     @Published var slots: [Slot] = []
     @Published var selectedSlotId: Int?
+    @Published var selectedSlotsForRip: Set<Int> = []
 
     // Operation state
     @Published var currentOperation: Operation?
@@ -32,6 +33,7 @@ final class ChangerViewModel: ObservableObject {
 
     // Batch operation
     @Published var batchState: BatchOperationState?
+    @Published var pendingRipDirectory: URL?  // Set by RipConfigSheet, consumed by MainView
 
     // Unload all state
     @Published var unloadAllInProgress = false
@@ -42,6 +44,8 @@ final class ChangerViewModel: ObservableObject {
     // Services
     private let changerService = ChangerService()
     private let mountService = MountService()
+    private let imagingService = ImagingService()
+    let catalogService = CatalogService()
 
     enum Operation: Equatable {
         case connecting
@@ -144,7 +148,7 @@ final class ChangerViewModel: ObservableObject {
     /// Internal refresh - must be called from background thread
     private func doRefreshInventory() {
         do {
-            let newSlots = try self.changerService.getSlotStatus()
+            var newSlots = try self.changerService.getSlotStatus()
 
             // Note: VGP-XL1B doesn't support READ ELEMENT STATUS for drive elements,
             // so we detect disc presence using DiskArbitration instead
@@ -153,6 +157,15 @@ final class ChangerViewModel: ObservableObject {
             // Use DiskArbitration to detect if disc is present (more reliable)
             let discPresent = self.mountService.isDiscPresent()
             let bsdName = self.mountService.findDiscBSDName()
+
+            // Load backup statuses from catalog
+            let backupStatuses = self.catalogService.getAllBackupStatuses()
+            for i in 0..<newSlots.count {
+                let slotId = newSlots[i].id
+                if let status = backupStatuses[slotId] {
+                    newSlots[i].backupStatus = status
+                }
+            }
 
             // Capture existing source slot BEFORE dispatching to main
             // This avoids race conditions with the main queue
@@ -823,6 +836,89 @@ final class ChangerViewModel: ObservableObject {
                 }
             },
             onComplete: { [weak self] in
+                self?.refreshInventory()
+            }
+        )
+    }
+
+    // MARK: - Rip Operations
+
+    /// Get slots available for ripping (have discs, not in drive)
+    var rippableSlots: [Slot] {
+        slots.filter { $0.isFull && !$0.isInDrive }
+    }
+
+    /// Toggle slot selection for ripping
+    func toggleSlotForRip(_ slotId: Int) {
+        if selectedSlotsForRip.contains(slotId) {
+            selectedSlotsForRip.remove(slotId)
+        } else {
+            selectedSlotsForRip.insert(slotId)
+        }
+    }
+
+    /// Select all rippable slots
+    func selectAllSlotsForRip() {
+        selectedSlotsForRip = Set(rippableSlots.map { $0.id })
+    }
+
+    /// Clear slot selection for ripping
+    func clearSlotSelectionForRip() {
+        selectedSlotsForRip.removeAll()
+    }
+
+    /// Start batch rip operation
+    func startBatchRip(outputDirectory: URL) {
+        guard isConnected else { return }
+        guard currentOperation == nil else { return }
+        guard !selectedSlotsForRip.isEmpty else { return }
+
+        let slotsToRip = slots.filter { selectedSlotsForRip.contains($0.id) && $0.isFull && !$0.isInDrive }
+        guard !slotsToRip.isEmpty else { return }
+
+        let state = BatchOperationState()
+        DispatchQueue.main.async { [weak self] in
+            self?.batchState = state
+        }
+
+        state.runImageAll(
+            slots: slotsToRip,
+            outputDirectory: outputDirectory,
+            changerService: changerService,
+            mountService: mountService,
+            imagingService: imagingService,
+            catalogService: catalogService,
+            onUpdate: { [weak self] in
+                DispatchQueue.main.async {
+                    self?.objectWillChange.send()
+                }
+            },
+            onSlotLoaded: { [weak self] slot, bsdName, mountPoint in
+                DispatchQueue.main.async {
+                    guard let self = self else { return }
+                    self.currentBSDName = bsdName
+                    self.driveStatus = .loaded(sourceSlot: slot, mountPoint: mountPoint)
+                    if slot > 0 && slot <= self.slots.count {
+                        self.slots[slot - 1].isFull = false
+                        self.slots[slot - 1].isInDrive = true
+                    }
+                }
+            },
+            onSlotEjected: { [weak self] slot in
+                DispatchQueue.main.async {
+                    guard let self = self else { return }
+                    if slot > 0 && slot <= self.slots.count {
+                        self.slots[slot - 1].isFull = true
+                        self.slots[slot - 1].isInDrive = false
+                    }
+                    self.driveStatus = .empty
+                    self.currentBSDName = nil
+                }
+            },
+            onComplete: { [weak self] in
+                DispatchQueue.main.async {
+                    self?.selectedSlotsForRip.removeAll()
+                }
                 self?.refreshInventory()
             }
         )

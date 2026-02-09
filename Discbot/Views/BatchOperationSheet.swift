@@ -9,7 +9,6 @@ import SwiftUI
 
 struct BatchOperationSheet: View {
     @ObservedObject var batchState: BatchOperationState
-    let onCancel: () -> Void
 
     @Environment(\.presentationMode) var presentationMode
 
@@ -18,7 +17,6 @@ struct BatchOperationSheet: View {
             // Header
             headerSection
 
-            // Progress
             progressSection
 
             // Status
@@ -27,9 +25,8 @@ struct BatchOperationSheet: View {
                 .foregroundColor(.secondary)
                 .frame(height: 20)
 
-            // Imaging progress (if applicable)
-            if case .imageAll = batchState.operationType, batchState.imagingProgress > 0 {
-                imagingProgressSection
+            if case .imageAll = batchState.operationType {
+                rippingStatsSection
             }
 
             // Current metadata (if available)
@@ -48,7 +45,7 @@ struct BatchOperationSheet: View {
             actionsSection
         }
         .padding(28)
-        .frame(width: 420, height: 400)
+        .frame(width: 460, height: 480)
     }
 
     private var headerSection: some View {
@@ -65,7 +62,17 @@ struct BatchOperationSheet: View {
 
     private var progressSection: some View {
         VStack(spacing: 12) {
-            // Progress bar
+            HStack {
+                Text("Queue Progress")
+                    .font(.subheadline)
+                    .fontWeight(.medium)
+                Spacer()
+                Text("\(batchState.currentIndex) of \(batchState.totalCount)")
+                    .font(.system(.subheadline, design: .rounded))
+                    .fontWeight(.medium)
+                    .foregroundColor(.secondary)
+            }
+
             GeometryReader { geometry in
                 ZStack(alignment: .leading) {
                     RoundedRectangle(cornerRadius: 6)
@@ -89,17 +96,22 @@ struct BatchOperationSheet: View {
                 }
 
                 Spacer()
-
-                Text("\(batchState.currentIndex) of \(batchState.totalCount)")
-                    .font(.system(.subheadline, design: .rounded))
-                    .fontWeight(.medium)
-                    .foregroundColor(.secondary)
             }
         }
     }
 
-    private var imagingProgressSection: some View {
-        VStack(spacing: 8) {
+    private var rippingStatsSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("Current Disc")
+                    .font(.subheadline)
+                    .fontWeight(.medium)
+                Spacer()
+                Text("\(Int(batchState.imagingProgress * 100))%")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+
             GeometryReader { geometry in
                 ZStack(alignment: .leading) {
                     RoundedRectangle(cornerRadius: 4)
@@ -113,9 +125,29 @@ struct BatchOperationSheet: View {
             }
             .frame(height: 8)
 
-            Text("Imaging: \(Int(batchState.imagingProgress * 100))%")
-                .font(.caption)
-                .foregroundColor(.secondary)
+            if let name = batchState.currentDiscName, !name.isEmpty {
+                Text(name)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+
+            HStack {
+                Text("\(formatBytes(batchState.currentDiscTransferredBytes)) / \(formatBytes(batchState.currentDiscTotalBytes))")
+                Spacer()
+                Text("ETA: \(formatDuration(batchState.currentDiscETASeconds))")
+            }
+            .font(.caption)
+            .foregroundColor(.secondary)
+
+            HStack {
+                Text("Queue: \(formatBytes(batchState.overallTransferredBytes)) / \(formatBytes(batchState.overallEstimatedTotalBytes))")
+                Spacer()
+                Text("Queue ETA: \(formatDuration(batchState.overallETASeconds))")
+            }
+            .font(.caption)
+            .foregroundColor(.secondary)
         }
     }
 
@@ -178,17 +210,40 @@ struct BatchOperationSheet: View {
                         .frame(minWidth: 80)
                 }
             } else {
-                Button(action: { onCancel() }) {
+                if case .imageAll = batchState.operationType {
+                    Button(action: {
+                        batchState.isPaused ? batchState.resumeRip() : batchState.pauseRip()
+                    }) {
+                        Text(batchState.isPaused ? "Resume" : "Pause")
+                            .frame(minWidth: 80)
+                    }
+                    .disabled(!batchState.isRunning)
+                }
+
+                Button(action: { batchState.cancel() }) {
                     Text("Cancel")
                         .frame(minWidth: 80)
                 }
                 .disabled(!batchState.isRunning)
-
-                Text("Will stop after current disc")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
             }
         }
+    }
+
+    private func formatBytes(_ bytes: Int64?) -> String {
+        guard let bytes = bytes else { return "Unknown" }
+        let formatter = ByteCountFormatter()
+        formatter.allowedUnits = [.useKB, .useMB, .useGB, .useTB]
+        formatter.countStyle = .file
+        return formatter.string(fromByteCount: bytes)
+    }
+
+    private func formatDuration(_ seconds: TimeInterval?) -> String {
+        guard let seconds = seconds, seconds.isFinite, seconds > 0 else { return "Unknown" }
+        let formatter = DateComponentsFormatter()
+        formatter.allowedUnits = [.hour, .minute, .second]
+        formatter.unitsStyle = .abbreviated
+        formatter.maximumUnitCount = 2
+        return formatter.string(from: seconds) ?? "Unknown"
     }
 
     private var titleText: String {
@@ -227,7 +282,7 @@ struct BatchOperationSheet_Previews: PreviewProvider {
         state.completedSlots = Array(1...22)
         state.failedSlots = [(5, "Slot empty"), (12, "Move failed")]
 
-        return BatchOperationSheet(batchState: state) {}
+        return BatchOperationSheet(batchState: state)
     }
 }
 #endif

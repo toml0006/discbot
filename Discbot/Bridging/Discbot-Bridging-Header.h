@@ -9,5 +9,7 @@
 #define Discbot_Bridging_Header_h
 
 #include "mchanger.h"
+#include "mount.h"
+#include <sqlite3.h>
 
 #endif /* Discbot_Bridging_Header_h */

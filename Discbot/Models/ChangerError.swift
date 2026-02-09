@@ -71,6 +71,7 @@ enum ImagingError: LocalizedError {
     case timeout
     case discNotReady
     case unsupportedDiscType(String)
+    case cancelled
 
     var errorDescription: String? {
         switch self {
@@ -88,6 +89,8 @@ enum ImagingError: LocalizedError {
             return "Disc not ready"
         case .unsupportedDiscType(let type):
             return "Unsupported disc type: \(type)"
+        case .cancelled:
+            return "Imaging was cancelled"
         }
     }
 }

@@ -9,7 +9,9 @@
 /* Begin PBXBuildFile section */
 		/* App Swift files */
 		AA0000 /* main.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0000; };
-		AA0001 /* Discbot.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0001; };
+		AA0001 /* DiscbotApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0001; };
+		/* mount library */
+		AA0021 /* mount.c in Sources */ = {isa = PBXBuildFile; fileRef = AB0022; };
 		AA0002 /* Slot.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0002; };
 		AA0003 /* DriveStatus.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0003; };
 		AA0004 /* DiscMetadata.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0004; };
@@ -28,6 +30,12 @@
 		AA0015 /* BatchOperationSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0015; };
 		AA0018 /* CompatViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0018; };
 		AA0019 /* InventoryListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0019; };
+		AA0024 /* RipConfigSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0024; };
+		/* Persistence files */
+		AA0040 /* Database.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0040; };
+		AA0041 /* DiscRecord.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0041; };
+		AA0042 /* BackupRecord.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0042; };
+		AA0043 /* CatalogService.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0043; };
 		/* mchanger library */
 		AA0020 /* mchanger.c in Sources */ = {isa = PBXBuildFile; fileRef = AB0020; };
 		/* Frameworks */
@@ -41,7 +49,7 @@
 		AC0001 /* Discbot.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Discbot.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		/* Swift files */
 		AB0000 /* main.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
-		AB0001 /* Discbot.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Discbot.swift; sourceTree = "<group>"; };
+		AB0001 /* DiscbotApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiscbotApp.swift; sourceTree = "<group>"; };
 		AB0002 /* Slot.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Slot.swift; sourceTree = "<group>"; };
 		AB0003 /* DriveStatus.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DriveStatus.swift; sourceTree = "<group>"; };
 		AB0004 /* DiscMetadata.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiscMetadata.swift; sourceTree = "<group>"; };
@@ -60,11 +68,20 @@
 		AB0015 /* BatchOperationSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BatchOperationSheet.swift; sourceTree = "<group>"; };
 		AB0018 /* CompatViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CompatViews.swift; sourceTree = "<group>"; };
 		AB0019 /* InventoryListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InventoryListView.swift; sourceTree = "<group>"; };
+		AB0024 /* RipConfigSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RipConfigSheet.swift; sourceTree = "<group>"; };
+		/* Persistence files */
+		AB0040 /* Database.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Database.swift; sourceTree = "<group>"; };
+		AB0041 /* DiscRecord.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiscRecord.swift; sourceTree = "<group>"; };
+		AB0042 /* BackupRecord.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackupRecord.swift; sourceTree = "<group>"; };
+		AB0043 /* CatalogService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CatalogService.swift; sourceTree = "<group>"; };
 		/* mchanger library */
 		AB0020 /* mchanger.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = mchanger.c; sourceTree = "<group>"; };
 		AB0021 /* mchanger.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = mchanger.h; sourceTree = "<group>"; };
 		/* Bridging header */
 		AB0026 /* Discbot-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "Discbot-Bridging-Header.h"; sourceTree = "<group>"; };
+		/* mount library */
+		AB0022 /* mount.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = mount.c; sourceTree = "<group>"; };
+		AB0023 /* mount.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = mount.h; sourceTree = "<group>"; };
 		/* Resources */
 		AB0027 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		AB0028 /* Discbot.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Discbot.entitlements; sourceTree = "<group>"; };
@@ -103,6 +120,7 @@
 			children = (
 				AE0010 /* App */,
 				AE0011 /* Models */,
+				AE0017 /* Persistence */,
 				AE0012 /* Services */,
 				AE0013 /* ViewModels */,
 				AE0014 /* Views */,
@@ -143,7 +161,7 @@
 			isa = PBXGroup;
 			children = (
 				AB0000 /* main.swift */,
-				AB0001 /* Discbot.swift */,
+				AB0001 /* DiscbotApp.swift */,
 			);
 			path = App;
 			sourceTree = "<group>";
@@ -166,6 +184,7 @@
 				AB0007 /* MountService.swift */,
 				AB0016 /* ImagingService.swift */,
 				AB0017 /* MetadataService.swift */,
+				AB0043 /* CatalogService.swift */,
 			);
 			path = Services;
 			sourceTree = "<group>";
@@ -190,6 +209,7 @@
 				AB0014 /* OperationProgressView.swift */,
 				AB0015 /* BatchOperationSheet.swift */,
 				AB0018 /* CompatViews.swift */,
+				AB0024 /* RipConfigSheet.swift */,
 			);
 			path = Views;
 			sourceTree = "<group>";
@@ -198,6 +218,8 @@
 			isa = PBXGroup;
 			children = (
 				AB0026 /* Discbot-Bridging-Header.h */,
+				AB0022 /* mount.c */,
+				AB0023 /* mount.h */,
 			);
 			path = Bridging;
 			sourceTree = "<group>";
@@ -209,6 +231,16 @@
 				AB0028 /* Discbot.entitlements */,
 			);
 			path = Resources;
+			sourceTree = "<group>";
+		};
+		AE0017 /* Persistence */ = {
+			isa = PBXGroup;
+			children = (
+				AB0040 /* Database.swift */,
+				AB0041 /* DiscRecord.swift */,
+				AB0042 /* BackupRecord.swift */,
+			);
+			path = Persistence;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -279,7 +311,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				AA0000 /* main.swift in Sources */,
-				AA0001 /* Discbot.swift in Sources */,
+				AA0001 /* DiscbotApp.swift in Sources */,
 				AA0002 /* Slot.swift in Sources */,
 				AA0003 /* DriveStatus.swift in Sources */,
 				AA0004 /* DiscMetadata.swift in Sources */,
@@ -296,9 +328,15 @@
 				AA0014 /* OperationProgressView.swift in Sources */,
 				AA0015 /* BatchOperationSheet.swift in Sources */,
 				AA0018 /* CompatViews.swift in Sources */,
+				AA0024 /* RipConfigSheet.swift in Sources */,
 				AA0016 /* ImagingService.swift in Sources */,
 				AA0017 /* MetadataService.swift in Sources */,
 				AA0020 /* mchanger.c in Sources */,
+				AA0021 /* mount.c in Sources */,
+				AA0040 /* Database.swift in Sources */,
+				AA0041 /* DiscRecord.swift in Sources */,
+				AA0042 /* BackupRecord.swift in Sources */,
+				AA0043 /* CatalogService.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

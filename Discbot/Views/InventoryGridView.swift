@@ -16,42 +16,54 @@ struct InventoryGridView: View {
     // Base cell dimensions (before zoom)
     private let baseCellWidth: CGFloat = 40
     private let baseCellHeight: CGFloat = 50
-    private let baseSpacing: CGFloat = 2
+    private let baseSpacing: CGFloat = 6
 
     // Computed dimensions based on zoom
     private var cellWidth: CGFloat { baseCellWidth * CGFloat(zoomScale) }
     private var cellHeight: CGFloat { baseCellHeight * CGFloat(zoomScale) }
     private var spacing: CGFloat { baseSpacing * CGFloat(zoomScale) }
 
-    // Dynamic column count based on available width
-    private let columns = 20
+    // Padding around the grid
+    private let gridPadding: CGFloat = 12
 
     var body: some View {
-        ScrollView {
-            if viewModel.slots.isEmpty {
-                emptyState
-            } else {
-                gridContent
+        GeometryReader { geometry in
+            ScrollView {
+                if viewModel.slots.isEmpty {
+                    emptyState
+                } else {
+                    gridContent(availableWidth: geometry.size.width)
+                }
             }
         }
         .background(Color(NSColor.textBackgroundColor))
     }
 
-    private var gridContent: some View {
-        VStack(spacing: spacing) {
+    private func columnCount(for availableWidth: CGFloat) -> Int {
+        let usableWidth = availableWidth - (gridPadding * 2)
+        let cellPlusSpacing = cellWidth + spacing
+        let count = Int((usableWidth + spacing) / cellPlusSpacing)
+        return max(1, count)
+    }
+
+    private func gridContent(availableWidth: CGFloat) -> some View {
+        let columns = columnCount(for: availableWidth)
+        let rowCount = (viewModel.slots.count + columns - 1) / columns
+
+        return VStack(spacing: spacing) {
             ForEach(0..<rowCount, id: \.self) { row in
                 HStack(spacing: spacing) {
                     ForEach(0..<columns, id: \.self) { col in
-                        cellAt(row: row, col: col)
+                        cellAt(row: row, col: col, columns: columns)
                     }
                 }
             }
         }
-        .padding(12)
+        .padding(gridPadding)
     }
 
     @ViewBuilder
-    private func cellAt(row: Int, col: Int) -> some View {
+    private func cellAt(row: Int, col: Int, columns: Int) -> some View {
         let index = row * columns + col
         if index < viewModel.slots.count {
             let slot = viewModel.slots[index]
@@ -115,10 +127,6 @@ struct InventoryGridView: View {
                 .disabled(viewModel.currentOperation != nil)
             }
         }
-    }
-
-    private var rowCount: Int {
-        (viewModel.slots.count + columns - 1) / columns
     }
 
     private var emptyState: some View {

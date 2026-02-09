@@ -36,12 +36,12 @@ struct DriveStatusView: View {
                 .frame(width: 28)
 
             VStack(alignment: .leading, spacing: 2) {
-                Text("Device")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
                 Text(viewModel.deviceDescription)
                     .font(.system(.body, design: .rounded))
                     .fontWeight(.medium)
+                Text("\(viewModel.fullSlotCount)/\(viewModel.slots.count) populated")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
             }
         }
         .frame(minWidth: 180, alignment: .leading)

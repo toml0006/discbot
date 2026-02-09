@@ -16,6 +16,7 @@ struct MainView: View {
     @EnvironmentObject private var viewModel: ChangerViewModel
 
     @State private var showingBatchSheet = false
+    @State private var showingRipSheet = false
     @State private var showingError = false
     @State private var viewMode: InventoryViewMode = .grid
 
@@ -69,10 +70,25 @@ struct MainView: View {
         }
         .sheet(isPresented: $showingBatchSheet) {
             if let batchState = viewModel.batchState {
-                BatchOperationSheet(batchState: batchState) {
-                    batchState.cancel()
-                }
+                BatchOperationSheet(batchState: batchState)
             }
+        }
+        .sheet(isPresented: $showingRipSheet) {
+            RipConfigSheet()
+                .environmentObject(viewModel)
+        }
+        .onReceive(viewModel.$batchState) { state in
+            if state?.isRunning == true && !showingBatchSheet {
+                showingBatchSheet = true
+            }
+        }
+        .onReceive(viewModel.$pendingRipDirectory) { directory in
+            guard let dir = directory else { return }
+            // Clear the pending directory first
+            viewModel.pendingRipDirectory = nil
+            // Show batch sheet BEFORE starting rip (like Load All does)
+            showingBatchSheet = true
+            viewModel.startBatchRip(outputDirectory: dir)
         }
     }
 
@@ -303,6 +319,14 @@ struct MainView: View {
                 }
             }
             .disabled(viewModel.currentOperation != nil || viewModel.fullSlotCount == 0 || !viewModel.hasIESlot)
+
+            Button(action: { showingRipSheet = true }) {
+                HStack(spacing: 4) {
+                    SFSymbol(name: "opticaldisc", size: 12)
+                    Text("Rip")
+                }
+            }
+            .disabled(viewModel.currentOperation != nil || viewModel.fullSlotCount == 0)
         }
     }
 
