@@ -2,7 +2,7 @@
 //  RipConfigSheet.swift
 //  Discbot
 //
-//  Sheet for configuring disc ripping operation
+//  Sheet for configuring disc imaging operation
 //
 
 import SwiftUI
@@ -42,9 +42,9 @@ struct RipConfigSheet: View {
 
     private var headerView: some View {
         VStack(spacing: 8) {
-            Text("Rip Discs to ISO")
+            Text("Image Discs to ISO")
                 .font(.headline)
-            Text("Select discs to rip and choose a destination folder")
+            Text("Select discs to image and choose a destination folder")
                 .font(.subheadline)
                 .foregroundColor(.secondary)
         }
@@ -77,7 +77,7 @@ struct RipConfigSheet: View {
             if viewModel.rippableSlots.isEmpty {
                 VStack {
                     Spacer()
-                    Text("No discs available to rip")
+                    Text("No discs available to image")
                         .foregroundColor(.secondary)
                     Spacer()
                 }
@@ -116,6 +116,11 @@ struct RipConfigSheet: View {
 
                 Text("Slot \(slot.id)")
                     .foregroundColor(.primary)
+
+                if case .backedUp = slot.backupStatus {
+                    SFSymbol(name: "checkmark.circle.fill", size: 12)
+                        .foregroundColor(.blue)
+                }
 
                 Spacer()
 
@@ -171,9 +176,9 @@ struct RipConfigSheet: View {
 
             Spacer()
 
-            Button("Start Ripping") {
+            Button("Start Imaging") {
                 if let dir = outputDirectory {
-                    // Signal MainView to start rip after this sheet dismisses
+                    // Signal MainView to start imaging after this sheet dismisses
                     viewModel.pendingRipDirectory = dir
                     presentationMode.wrappedValue.dismiss()
                 }

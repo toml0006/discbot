@@ -10,23 +10,50 @@ import SwiftUI
 struct SlotCellView: View {
     let slot: Slot
     let isSelected: Bool
+    var isSelectedForRip: Bool = false
     var cellSize: CGSize = CGSize(width: 40, height: 50)
 
     @State private var isHovered = false
 
-    // Computed sizes based on cell size
-    private var indicatorSize: CGFloat { cellSize.width * 0.8 }
-    private var iconSize: CGFloat { cellSize.width * 0.3 }
-    private var fontSize: CGFloat { max(8, cellSize.width * 0.225) }
+    // Computed sizes
+    private var iconSize: CGFloat { max(12, cellSize.width * 0.35) }
+    private var fontSize: CGFloat { max(8, cellSize.width * 0.22) }
+    private var cornerRadius: CGFloat { min(8, cellSize.width * 0.15) }
+    private var showMetadata: Bool { cellSize.width >= 55 }
+    private var accentHeight: CGFloat { max(3, cellSize.width * 0.06) }
 
     var body: some View {
-        VStack(spacing: cellSize.height * 0.08) {
-            statusIndicator
+        VStack(spacing: 0) {
+            // Thin accent bar at top for disc type
+            if slot.isFull || slot.isInDrive {
+                accentBar
+            } else {
+                Color.clear.frame(height: accentHeight)
+            }
+
+            Spacer(minLength: 0)
+
+            // Icon
+            tileIcon
+                .frame(height: iconSize)
+
+            Spacer(minLength: 2)
+
+            // Slot number
             slotLabel
+
+            // Metadata (at larger sizes)
+            if showMetadata && (slot.isFull || slot.isInDrive) {
+                metadataLabel
+                    .padding(.top, 1)
+            }
+
+            Spacer(minLength: 3)
         }
         .frame(width: cellSize.width, height: cellSize.height)
-        .background(cellBackground)
-        .overlay(cellBorder)
+        .background(tileBackground)
+        .overlay(tileBorder)
+        .clipShape(RoundedRectangle(cornerRadius: cornerRadius))
         .onHover { hovering in
             withAnimation(.easeInOut(duration: 0.15)) {
                 isHovered = hovering
@@ -35,120 +62,142 @@ struct SlotCellView: View {
         .background(TooltipView(tooltip: tooltipText))
     }
 
-    private var statusIndicator: some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: indicatorSize * 0.19)
-                .fill(backgroundColor)
-                .frame(width: indicatorSize, height: indicatorSize)
-                .shadow(color: shadowColor, radius: isSelected ? 4 : 2, x: 0, y: 1)
+    // MARK: - Accent Bar
 
-            indicatorIcon
-
-            // Backup status badge
-            if slot.isFull {
-                backupBadge
-                    .offset(x: indicatorSize * 0.35, y: indicatorSize * 0.35)
-            }
-        }
+    private var accentBar: some View {
+        Rectangle()
+            .fill(accentColor)
+            .frame(height: accentHeight)
     }
 
-    @ViewBuilder
-    private var backupBadge: some View {
-        let badgeSize = max(10, indicatorSize * 0.4)
-        switch slot.backupStatus {
-        case .backedUp:
-            ZStack {
-                Circle()
-                    .fill(Color.blue)
-                    .frame(width: badgeSize, height: badgeSize)
-                SFSymbol(name: "checkmark", size: badgeSize * 0.6)
-                    .foregroundColor(.white)
-            }
-        case .failed:
-            ZStack {
-                Circle()
-                    .fill(Color.red)
-                    .frame(width: badgeSize, height: badgeSize)
-                SFSymbol(name: "xmark", size: badgeSize * 0.6)
-                    .foregroundColor(.white)
-            }
-        case .notBackedUp:
-            EmptyView()
-        }
-    }
+    // MARK: - Icon
 
     @ViewBuilder
-    private var indicatorIcon: some View {
+    private var tileIcon: some View {
         if slot.isInDrive {
             SFSymbol(name: "play.fill", size: iconSize)
-                .foregroundColor(.white)
+                .foregroundColor(accentColor)
         } else if slot.hasException {
             SFSymbol(name: "exclamationmark.triangle.fill", size: iconSize)
-                .foregroundColor(.white)
+                .foregroundColor(.red)
         } else if slot.isFull {
-            SFSymbol(name: "circle.fill", size: iconSize)
-                .foregroundColor(Color.white.opacity(0.9))
+            SFSymbol(name: slot.discType.iconName, size: iconSize)
+                .foregroundColor(accentColor)
         } else {
-            EmptyView()
+            // Empty slot - faint circle
+            SFSymbol(name: "circle.dashed", size: iconSize * 0.7)
+                .foregroundColor(Color.primary.opacity(0.12))
         }
     }
+
+    // MARK: - Labels
 
     private var slotLabel: some View {
         Text("\(slot.id)")
-            .font(.system(size: fontSize, weight: .medium, design: .rounded))
-            .foregroundColor(isSelected ? .accentColor : .secondary)
+            .font(.system(size: fontSize, weight: .semibold, design: .rounded))
+            .foregroundColor(labelColor)
     }
 
-    private var cellBackground: some View {
-        RoundedRectangle(cornerRadius: cellSize.width * 0.2)
+    @ViewBuilder
+    private var metadataLabel: some View {
+        let metaFontSize = max(7, fontSize * 0.75)
+        if let label = slot.volumeLabel, !label.isEmpty {
+            Text(label)
+                .font(.system(size: metaFontSize, design: .rounded))
+                .foregroundColor(Color.secondary.opacity(0.7))
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .frame(maxWidth: cellSize.width - 6)
+        } else if slot.discType != .unscanned {
+            Text(slot.discType.label)
+                .font(.system(size: metaFontSize, design: .rounded))
+                .foregroundColor(Color.secondary.opacity(0.5))
+                .lineLimit(1)
+        }
+    }
+
+    private var labelColor: Color {
+        if isSelectedForRip {
+            return .orange
+        } else if isSelected {
+            return .accentColor
+        } else {
+            return .secondary
+        }
+    }
+
+    // MARK: - Background & Border
+
+    private var tileBackground: some View {
+        RoundedRectangle(cornerRadius: cornerRadius)
             .fill(backgroundFill)
     }
 
     private var backgroundFill: Color {
-        if isSelected {
-            return Color.accentColor.opacity(0.15)
+        if isSelectedForRip {
+            return Color.orange.opacity(0.1)
+        } else if isSelected {
+            return Color.accentColor.opacity(0.08)
         } else if isHovered {
-            return Color.primary.opacity(0.05)
+            return Color.primary.opacity(0.06)
+        } else if slot.isFull || slot.isInDrive {
+            return Color.primary.opacity(0.04)
         } else {
-            return Color.clear
+            return Color.primary.opacity(0.02)
         }
     }
 
-    private var cellBorder: some View {
-        RoundedRectangle(cornerRadius: cellSize.width * 0.2)
-            .stroke(isSelected ? Color.accentColor : Color.clear, lineWidth: 2)
+    private var tileBorder: some View {
+        RoundedRectangle(cornerRadius: cornerRadius)
+            .stroke(borderColor, lineWidth: (isSelected || isSelectedForRip) ? 2 : 0.5)
     }
 
-    private var backgroundColor: Color {
+    private var borderColor: Color {
+        if isSelectedForRip {
+            return Color.orange
+        } else if isSelected {
+            return Color.accentColor
+        } else {
+            return Color.primary.opacity(0.08)
+        }
+    }
+
+    // MARK: - Accent Color (subtle, per disc type)
+
+    private var accentColor: Color {
         if slot.isInDrive {
             return Color.accentColor
         } else if slot.hasException {
             return Color.red
-        } else if slot.isFull {
-            return Color(NSColor.systemGreen)
         } else {
-            return Color(NSColor.quaternaryLabelColor)
+            return discTypeAccent
         }
     }
 
-    private var shadowColor: Color {
-        if slot.isInDrive {
-            return Color.accentColor.opacity(0.4)
-        } else if slot.isFull {
-            return Color.green.opacity(0.3)
-        } else {
-            return Color.black.opacity(0.1)
+    private var discTypeAccent: Color {
+        switch slot.discType {
+        case .audioCDDA:   return Color.purple
+        case .dvd:         return Color(NSColor.systemGreen)
+        case .dataCD:      return Color.blue
+        case .mixedModeCD: return Color.orange
+        case .unknown:     return Color.secondary
+        case .unscanned:   return Color.secondary
         }
     }
+
+    // MARK: - Tooltip
 
     private var tooltipText: String {
         var text = "Slot \(slot.id)"
         if slot.isInDrive {
             text += " (In Drive)"
         } else if slot.isFull {
-            text += " (Full)"
+            text += " (\(slot.discType.label))"
         } else {
             text += " (Empty)"
+        }
+        if let label = slot.volumeLabel {
+            text += " - \(label)"
         }
         if slot.hasException {
             text += " - Exception"
@@ -186,11 +235,12 @@ struct TooltipView: NSViewRepresentable {
 struct SlotCellView_Previews: PreviewProvider {
     static var previews: some View {
         HStack(spacing: 8) {
-            SlotCellView(slot: Slot(id: 1, address: 4, isFull: true), isSelected: false)
-            SlotCellView(slot: Slot(id: 2, address: 5, isFull: false), isSelected: false)
-            SlotCellView(slot: Slot(id: 3, address: 6, isFull: true, isInDrive: true), isSelected: false)
-            SlotCellView(slot: Slot(id: 4, address: 7, isFull: true, hasException: true), isSelected: false)
-            SlotCellView(slot: Slot(id: 5, address: 8, isFull: true), isSelected: true)
+            SlotCellView(slot: Slot(id: 1, address: 4, isFull: true, discType: .audioCDDA, volumeLabel: "Abbey Road"), isSelected: false, cellSize: CGSize(width: 60, height: 78))
+            SlotCellView(slot: Slot(id: 2, address: 5, isFull: false), isSelected: false, cellSize: CGSize(width: 60, height: 78))
+            SlotCellView(slot: Slot(id: 3, address: 6, isFull: true, isInDrive: true, discType: .dvd, volumeLabel: "Interstellar"), isSelected: false, cellSize: CGSize(width: 60, height: 78))
+            SlotCellView(slot: Slot(id: 4, address: 7, isFull: true, hasException: true), isSelected: false, cellSize: CGSize(width: 60, height: 78))
+            SlotCellView(slot: Slot(id: 5, address: 8, isFull: true, discType: .dataCD, volumeLabel: "BACKUP_2021"), isSelected: true, cellSize: CGSize(width: 60, height: 78))
+            SlotCellView(slot: Slot(id: 6, address: 9, isFull: true, discType: .unscanned), isSelected: false, cellSize: CGSize(width: 60, height: 78))
         }
         .padding()
         .background(Color(NSColor.windowBackgroundColor))

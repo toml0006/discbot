@@ -80,6 +80,8 @@ struct OperationProgressView: View {
             return "arrow.clockwise"
         case .unloading:
             return "tray.and.arrow.up"
+        case .scanningSlot:
+            return "magnifyingglass.circle"
         case .waitingForDiscRemoval:
             return "hand.point.down.fill"
         }
@@ -94,15 +96,17 @@ struct OperationProgressView: View {
         case .ejecting:
             return "Ejecting to Slot"
         case .mounting:
-            return "Mounting Drive"
+            return "Mounting"
         case .unmounting:
-            return "Unmounting Drive"
+            return "Unmounting"
         case .scanning:
             return "Scanning Inventory"
         case .refreshing:
             return "Refreshing"
         case .unloading(let slot):
-            return "Ejecting Slot \(slot)"
+            return "Ejecting Disc \(slot)"
+        case .scanningSlot(let slot):
+            return "Scanning Slot \(slot)"
         case .waitingForDiscRemoval:
             return "Remove Disc"
         }

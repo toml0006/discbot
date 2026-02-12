@@ -25,7 +25,20 @@ enum DiscType: Equatable {
     case unknown
 }
 
-final class ImagingService {
+protocol ImagingServicing: AnyObject {
+    func estimateDiscSizeBytes(bsdName: String) -> Int64?
+    func detectDiscType(bsdName: String) -> DiscType
+    func createImage(
+        bsdName: String,
+        discType: DiscType,
+        outputPath: URL,
+        totalBytes: Int64?,
+        control: ImagingService.ImagingControl?,
+        progress: @escaping (ImagingProgressInfo) -> Void
+    ) throws -> URL
+}
+
+final class ImagingService: ImagingServicing {
     final class ImagingControl {
         private let lock = NSLock()
         private var process: Process?
@@ -316,5 +329,110 @@ final class ImagingService {
                 progress: progress
             )
         }
+    }
+}
+
+// MARK: - Mock Imaging Service
+
+final class MockImagingService: ImagingServicing {
+    /// Simulated disc catalog for variety
+    private struct MockDisc {
+        let volumeName: String
+        let discType: DiscType
+        let sizeBytes: Int64
+    }
+
+    /// Seeded RNG so mock data is deterministic per slot
+    private let mockDiscs: [MockDisc] = [
+        MockDisc(volumeName: "PLANET_EARTH_S1D1", discType: .dvd, sizeBytes: 4_700_000_000),
+        MockDisc(volumeName: "Abbey_Road", discType: .audioCDDA, sizeBytes: 320_000_000),
+        MockDisc(volumeName: "OFFICE_BACKUP_2019", discType: .dataCD, sizeBytes: 680_000_000),
+        MockDisc(volumeName: "The_Dark_Knight", discType: .dvd, sizeBytes: 7_900_000_000),
+        MockDisc(volumeName: "Kind_of_Blue", discType: .audioCDDA, sizeBytes: 280_000_000),
+        MockDisc(volumeName: "PHOTOS_CHRISTMAS_2020", discType: .dataCD, sizeBytes: 450_000_000),
+        MockDisc(volumeName: "Breaking_Bad_S3D2", discType: .dvd, sizeBytes: 6_200_000_000),
+        MockDisc(volumeName: "Rumours", discType: .audioCDDA, sizeBytes: 310_000_000),
+        MockDisc(volumeName: "SW_INSTALL_DISC", discType: .dataCD, sizeBytes: 700_000_000),
+        MockDisc(volumeName: "Interstellar", discType: .dvd, sizeBytes: 8_500_000_000),
+        MockDisc(volumeName: "Thriller", discType: .audioCDDA, sizeBytes: 290_000_000),
+        MockDisc(volumeName: "TAX_RECORDS_2021", discType: .dataCD, sizeBytes: 210_000_000),
+        MockDisc(volumeName: "Seinfeld_S4D3", discType: .dvd, sizeBytes: 4_300_000_000),
+        MockDisc(volumeName: "The_Wall", discType: .audioCDDA, sizeBytes: 480_000_000),
+        MockDisc(volumeName: "HOME_VIDEOS_2018", discType: .dvd, sizeBytes: 3_800_000_000),
+        MockDisc(volumeName: "OK_Computer", discType: .audioCDDA, sizeBytes: 330_000_000),
+        MockDisc(volumeName: "DRIVER_DISC_HP", discType: .dataCD, sizeBytes: 150_000_000),
+        MockDisc(volumeName: "Jurassic_Park", discType: .dvd, sizeBytes: 7_100_000_000),
+        MockDisc(volumeName: "Blue_Train", discType: .audioCDDA, sizeBytes: 250_000_000),
+        MockDisc(volumeName: "Blade_Runner_2049", discType: .dvd, sizeBytes: 8_200_000_000),
+    ]
+
+    /// Imaging speed simulation: ~2-6 seconds per disc (fast enough for demo, slow enough to see progress)
+    private let imageDurationRange: ClosedRange<Double> = 2.0...6.0
+
+    private func mockDisc(for bsdName: String) -> MockDisc {
+        // Extract serial from bsdName like "mockdisk42" to pick a deterministic disc
+        let serial = Int(bsdName.filter { $0.isNumber }) ?? 0
+        return mockDiscs[serial % mockDiscs.count]
+    }
+
+    func estimateDiscSizeBytes(bsdName: String) -> Int64? {
+        return mockDisc(for: bsdName).sizeBytes
+    }
+
+    func detectDiscType(bsdName: String) -> DiscType {
+        return mockDisc(for: bsdName).discType
+    }
+
+    func createImage(
+        bsdName: String,
+        discType: DiscType,
+        outputPath: URL,
+        totalBytes: Int64?,
+        control: ImagingService.ImagingControl?,
+        progress: @escaping (ImagingProgressInfo) -> Void
+    ) throws -> URL {
+        let disc = mockDisc(for: bsdName)
+        let totalSize = totalBytes ?? disc.sizeBytes
+        let duration = Double.random(in: imageDurationRange)
+        let steps = 50
+        let stepInterval = duration / Double(steps)
+        let startTime = Date()
+
+        for i in 1...steps {
+            if control?.isCancelled == true {
+                throw ImagingError.cancelled
+            }
+
+            // Pause support
+            while control?.isPaused == true {
+                Thread.sleep(forTimeInterval: 0.1)
+                if control?.isCancelled == true {
+                    throw ImagingError.cancelled
+                }
+            }
+
+            Thread.sleep(forTimeInterval: stepInterval)
+
+            let fraction = Double(i) / Double(steps)
+            let transferred = Int64(Double(totalSize) * fraction)
+            let elapsed = max(Date().timeIntervalSince(startTime), 0.001)
+            let speed = Double(transferred) / elapsed
+            let remaining = totalSize - transferred
+            let eta = speed > 0 ? Double(remaining) / speed : nil
+
+            progress(ImagingProgressInfo(
+                fractionCompleted: fraction,
+                bytesTransferred: transferred,
+                totalBytes: totalSize,
+                speedBytesPerSecond: speed,
+                etaSeconds: eta
+            ))
+        }
+
+        // Create a tiny placeholder file so the path exists
+        let isoPath = outputPath.deletingPathExtension().appendingPathExtension("iso")
+        FileManager.default.createFile(atPath: isoPath.path, contents: "MOCK ISO".data(using: .utf8))
+
+        return isoPath
     }
 }

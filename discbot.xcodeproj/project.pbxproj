@@ -39,9 +39,12 @@
 		/* mchanger library */
 		AA0020 /* mchanger.c in Sources */ = {isa = PBXBuildFile; fileRef = AB0020; };
 		/* Frameworks */
-		AA0030 /* CoreFoundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AB0030; };
-		AA0031 /* IOKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AB0031; };
-		AA0032 /* DiskArbitration.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AB0032; };
+			AA0030 /* CoreFoundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AB0030; };
+			AA0031 /* IOKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AB0031; };
+			AA0032 /* DiskArbitration.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AB0032; };
+			/* Resources */
+			AA0044 /* Discbot.icns in Resources */ = {isa = PBXBuildFile; fileRef = AB0044; };
+			AA0045 /* AppIcon128.png in Resources */ = {isa = PBXBuildFile; fileRef = AB0045; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -82,13 +85,15 @@
 		/* mount library */
 		AB0022 /* mount.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = mount.c; sourceTree = "<group>"; };
 		AB0023 /* mount.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = mount.h; sourceTree = "<group>"; };
-		/* Resources */
-		AB0027 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
-		AB0028 /* Discbot.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Discbot.entitlements; sourceTree = "<group>"; };
-		/* Frameworks */
-		AB0030 /* CoreFoundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreFoundation.framework; path = System/Library/Frameworks/CoreFoundation.framework; sourceTree = SDKROOT; };
-		AB0031 /* IOKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = IOKit.framework; path = System/Library/Frameworks/IOKit.framework; sourceTree = SDKROOT; };
-		AB0032 /* DiskArbitration.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = DiskArbitration.framework; path = System/Library/Frameworks/DiskArbitration.framework; sourceTree = SDKROOT; };
+			/* Resources */
+			AB0027 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+			AB0028 /* Discbot.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Discbot.entitlements; sourceTree = "<group>"; };
+			AB0044 /* Discbot.icns */ = {isa = PBXFileReference; lastKnownFileType = image.icns; path = Discbot.icns; sourceTree = "<group>"; };
+			AB0045 /* AppIcon128.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = AppIcon128.png; sourceTree = "<group>"; };
+			/* Frameworks */
+			AB0030 /* CoreFoundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreFoundation.framework; path = System/Library/Frameworks/CoreFoundation.framework; sourceTree = SDKROOT; };
+			AB0031 /* IOKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = IOKit.framework; path = System/Library/Frameworks/IOKit.framework; sourceTree = SDKROOT; };
+			AB0032 /* DiskArbitration.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = DiskArbitration.framework; path = System/Library/Frameworks/DiskArbitration.framework; sourceTree = SDKROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -224,15 +229,17 @@
 			path = Bridging;
 			sourceTree = "<group>";
 		};
-		AE0016 /* Resources */ = {
-			isa = PBXGroup;
-			children = (
-				AB0027 /* Info.plist */,
-				AB0028 /* Discbot.entitlements */,
-			);
-			path = Resources;
-			sourceTree = "<group>";
-		};
+			AE0016 /* Resources */ = {
+				isa = PBXGroup;
+				children = (
+					AB0027 /* Info.plist */,
+					AB0028 /* Discbot.entitlements */,
+					AB0044 /* Discbot.icns */,
+					AB0045 /* AppIcon128.png */,
+				);
+				path = Resources;
+				sourceTree = "<group>";
+			};
 		AE0017 /* Persistence */ = {
 			isa = PBXGroup;
 			children = (
@@ -296,13 +303,15 @@
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
-		AF0020 /* Resources */ = {
-			isa = PBXResourcesBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
+			AF0020 /* Resources */ = {
+				isa = PBXResourcesBuildPhase;
+				buildActionMask = 2147483647;
+				files = (
+					AA0044 /* Discbot.icns in Resources */,
+					AA0045 /* AppIcon128.png in Resources */,
+				);
+				runOnlyForDeploymentPostprocessing = 0;
+			};
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */

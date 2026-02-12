@@ -14,22 +14,43 @@ enum InventoryViewMode: String {
 
 struct MainView: View {
     @EnvironmentObject private var viewModel: ChangerViewModel
+    @EnvironmentObject private var settings: AppSettings
 
     @State private var showingBatchSheet = false
-    @State private var showingRipSheet = false
     @State private var showingError = false
     @State private var viewMode: InventoryViewMode = .grid
 
-    // Zoom scale (0.5 to 2.0, default 1.0) - using UserDefaults for 10.15 compatibility
+    // Zoom scale (0.5 to 2.0, default 1.0)
     @State private var zoomScale: Double = UserDefaults.standard.double(forKey: "gridZoomScale").nonZeroOrDefault(1.0)
+
+    /// Whether any slots have been loaded (controls search/filter enabled state)
+    private var hasSlots: Bool {
+        !viewModel.slots.isEmpty
+    }
 
     var body: some View {
         VStack(spacing: 0) {
-            // Header with device and drive info
+            // Header: changer info + actions | drive info + actions
             DriveStatusView()
                 .padding(.horizontal, 20)
-                .padding(.vertical, 16)
+                .padding(.vertical, 12)
                 .background(VisualEffectView(material: .headerView, blendingMode: .withinWindow))
+
+            Divider()
+
+            // Search/filter bar
+            searchFilterBar
+                .padding(.horizontal, 16)
+                .padding(.vertical, 6)
+                .background(Color(NSColor.controlBackgroundColor))
+
+            // Waiting banner (disc removal)
+            if isWaitingForDiscRemoval {
+                waitingBanner
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 6)
+                    .background(Color.orange.opacity(0.1))
+            }
 
             Divider()
 
@@ -42,13 +63,13 @@ struct MainView: View {
 
             Divider()
 
-            // Footer with stats and actions
-            footerView
-                .padding(.horizontal, 20)
-                .padding(.vertical, 12)
+            // Footer: view controls + stats
+            footerBar
+                .padding(.horizontal, 16)
+                .padding(.vertical, 6)
                 .background(VisualEffectView(material: .headerView, blendingMode: .withinWindow))
         }
-        .frame(minWidth: 900, minHeight: 600)
+        .frame(minWidth: 700, minHeight: 500)
         .overlay(operationOverlay)
         .alert(isPresented: $showingError) {
             Alert(
@@ -62,43 +83,40 @@ struct MainView: View {
         .onReceive(viewModel.$connectionError) { error in
             showingError = error != nil
         }
-        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
-            // Auto-refresh when app gains focus
-            if viewModel.isConnected && viewModel.currentOperation == nil {
-                viewModel.refreshInventory()
-            }
-        }
         .sheet(isPresented: $showingBatchSheet) {
             if let batchState = viewModel.batchState {
                 BatchOperationSheet(batchState: batchState)
             }
-        }
-        .sheet(isPresented: $showingRipSheet) {
-            RipConfigSheet()
-                .environmentObject(viewModel)
         }
         .onReceive(viewModel.$batchState) { state in
             if state?.isRunning == true && !showingBatchSheet {
                 showingBatchSheet = true
             }
         }
-        .onReceive(viewModel.$pendingRipDirectory) { directory in
-            guard let dir = directory else { return }
-            // Clear the pending directory first
-            viewModel.pendingRipDirectory = nil
-            // Show batch sheet BEFORE starting rip (like Load All does)
-            showingBatchSheet = true
-            viewModel.startBatchRip(outputDirectory: dir)
+        // Menu bar notifications
+        .onReceive(NotificationCenter.default.publisher(for: .menuSetViewMode)) { notification in
+            if let mode = notification.object as? String {
+                viewMode = mode == "grid" ? .grid : .list
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .menuZoomIn)) { _ in
+            zoomScale = min(2.0, zoomScale + 0.1)
+            UserDefaults.standard.set(zoomScale, forKey: "gridZoomScale")
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .menuZoomOut)) { _ in
+            zoomScale = max(0.5, zoomScale - 0.1)
+            UserDefaults.standard.set(zoomScale, forKey: "gridZoomScale")
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .menuImageSelected)) { _ in
+            pickFolderAndStartImaging()
         }
     }
 
     @ViewBuilder
     private var operationOverlay: some View {
-        // Only show overlay for long-running operations, not refreshing
         if let op = viewModel.currentOperation, !isQuickOperation(op) {
             ZStack {
                 Color.black.opacity(0.3)
-
                 OperationProgressView(
                     operation: viewModel.currentOperation!,
                     statusText: viewModel.operationStatusText
@@ -116,29 +134,115 @@ struct MainView: View {
         }
     }
 
-    private var footerView: some View {
-        HStack(spacing: 16) {
-            // Stats with icons
-            statsSection
+    // MARK: - Search / Filter Bar
+
+    private var searchFilterBar: some View {
+        HStack(spacing: 12) {
+            // Search field (left-aligned)
+            SearchFieldView(text: $viewModel.searchText, placeholder: "Search slots...")
+                .frame(width: 180, height: 22)
+                .disabled(!hasSlots)
+                .opacity(hasSlots ? 1.0 : 0.5)
+
+            // Filter popup
+            PopUpButtonView(
+                items: ChangerViewModel.SlotFilter.allCases.map { ($0.rawValue, $0) },
+                selection: $viewModel.slotFilter
+            )
+            .frame(width: 100, height: 22)
+            .disabled(!hasSlots)
+            .opacity(hasSlots ? 1.0 : 0.5)
+
+            if viewModel.isFiltering {
+                Text("\(viewModel.filteredSlots.count) shown")
+                    .font(.system(.caption, design: .rounded))
+                    .foregroundColor(.orange)
+            }
 
             Spacer()
 
-            // Show Continue/Cancel when waiting for disc removal
-            if isWaitingForDiscRemoval {
-                waitingSection
-            } else {
-                // Normal actions
-                actionsSection
+            // Selection info + Image button
+            if !viewModel.selectedSlotsForRip.isEmpty {
+                selectionControls
             }
         }
     }
 
-    private var statsSection: some View {
-        HStack(spacing: 16) {
+    // MARK: - Selection Controls
+
+    private var selectionControls: some View {
+        HStack(spacing: 8) {
+            HStack(spacing: 4) {
+                SFSymbol(name: "opticaldisc", size: 11)
+                    .foregroundColor(.orange)
+                Text("\(viewModel.selectedSlotsForRip.count) selected")
+                    .font(.system(.caption, design: .rounded))
+                    .foregroundColor(.orange)
+            }
+
+            Button("Clear") {
+                viewModel.clearSlotSelectionForRip()
+            }
+            .font(.caption)
+            .buttonStyle(BorderlessButtonStyle())
+
+            if viewModel.selectedSlotsForRip.count < viewModel.rippableSlots.count {
+                Button("Select All") {
+                    viewModel.selectAllSlotsForRip()
+                }
+                .font(.caption)
+                .buttonStyle(BorderlessButtonStyle())
+            }
+
+            Divider()
+                .frame(height: 16)
+
+            Button(action: { pickFolderAndStartImaging() }) {
+                HStack(spacing: 3) {
+                    SFSymbol(name: "opticaldisc", size: 12)
+                    Text(imageButtonLabel)
+                        .font(.caption)
+                }
+            }
+            .disabled(viewModel.currentOperation != nil || viewModel.selectedSlotsForRip.isEmpty)
+            .helpTooltip(imageTooltip)
+        }
+    }
+
+    // MARK: - Waiting Banner
+
+    private var waitingBanner: some View {
+        HStack(spacing: 12) {
+            SFSymbol(name: "arrow.down.circle.fill", size: 14)
+                .foregroundColor(.orange)
+            Text(viewModel.operationStatusText)
+                .font(.caption)
+                .foregroundColor(.orange)
+                .lineLimit(1)
+                .truncationMode(.middle)
+
+            Spacer()
+
+            Button("Continue") {
+                viewModel.continueUnloadAll()
+            }
+            .font(.caption)
+
+            Button("Cancel") {
+                viewModel.cancelUnloadAll()
+            }
+            .font(.caption)
+        }
+    }
+
+    // MARK: - Footer (view controls + stats)
+
+    private var footerBar: some View {
+        HStack(spacing: 12) {
             // View mode toggle
             viewModeToggle
 
-            // Zoom slider (only in grid mode)
+            // Zoom (grid only)
             if viewMode == .grid {
                 zoomSlider
             }
@@ -147,49 +251,61 @@ struct MainView: View {
                 .frame(height: 16)
 
             // Stats
-            HStack(spacing: 4) {
-                SFSymbol(name: "circle.fill", size: 12)
+            statsView
+
+            Spacer()
+        }
+    }
+
+    // MARK: - Stats
+
+    private var statsView: some View {
+        HStack(spacing: 8) {
+            HStack(spacing: 3) {
+                SFSymbol(name: "circle.fill", size: 9)
                     .foregroundColor(.green)
                 Text("\(viewModel.fullSlotCount) full")
-                    .font(.system(.subheadline, design: .rounded))
+                    .font(.system(.caption, design: .rounded))
                     .foregroundColor(.secondary)
             }
 
-            HStack(spacing: 4) {
-                SFSymbol(name: "circle.dashed", size: 12)
+            HStack(spacing: 3) {
+                SFSymbol(name: "circle.dashed", size: 9)
                     .foregroundColor(.secondary)
                 Text("\(viewModel.emptySlotCount) empty")
-                    .font(.system(.subheadline, design: .rounded))
+                    .font(.system(.caption, design: .rounded))
                     .foregroundColor(.secondary)
             }
         }
     }
 
+    // MARK: - View Controls
+
     private var viewModeToggle: some View {
         HStack(spacing: 2) {
             Button(action: { viewMode = .grid }) {
-                SFSymbol(name: "circle.grid.3x3", size: 14)
-                    .frame(width: 28, height: 22)
+                SFSymbol(name: "circle.grid.3x3", size: 13)
+                    .frame(width: 26, height: 20)
             }
             .buttonStyle(ToggleButtonStyle(isActive: viewMode == .grid))
 
             Button(action: { viewMode = .list }) {
-                SFSymbol(name: "list.bullet", size: 14)
-                    .frame(width: 28, height: 22)
+                SFSymbol(name: "list.bullet", size: 13)
+                    .frame(width: 26, height: 20)
             }
             .buttonStyle(ToggleButtonStyle(isActive: viewMode == .list))
         }
         .padding(2)
         .background(
-            RoundedRectangle(cornerRadius: 6)
+            RoundedRectangle(cornerRadius: 5)
                 .fill(Color.primary.opacity(0.06))
         )
     }
 
     private var zoomSlider: some View {
-        HStack(spacing: 6) {
+        HStack(spacing: 4) {
             Text("−")
-                .font(.system(size: 14, weight: .medium))
+                .font(.system(size: 12, weight: .medium))
                 .foregroundColor(.secondary)
             Slider(value: Binding(
                 get: { zoomScale },
@@ -198,166 +314,50 @@ struct MainView: View {
                     UserDefaults.standard.set(newValue, forKey: "gridZoomScale")
                 }
             ), in: 0.5...2.0, step: 0.1)
-                .frame(width: 80)
+                .frame(width: 70)
             Text("+")
-                .font(.system(size: 14, weight: .medium))
+                .font(.system(size: 12, weight: .medium))
                 .foregroundColor(.secondary)
         }
     }
 
-    private var waitingSection: some View {
-        HStack(spacing: 12) {
-            SFSymbol(name: "arrow.down.circle.fill", size: 16)
-                .foregroundColor(.orange)
-            Text(viewModel.operationStatusText)
-                .font(.subheadline)
-                .foregroundColor(.orange)
-
-            Button("Continue") {
-                viewModel.continueUnloadAll()
-            }
-
-            Button("Cancel") {
-                viewModel.cancelUnloadAll()
-            }
-        }
-    }
-
-    private var actionsSection: some View {
-        HStack(spacing: 8) {
-            // Refresh group
-            refreshButtons
-
-            Divider()
-                .frame(height: 20)
-                .padding(.horizontal, 4)
-
-            // Selected slot actions
-            slotButtons
-
-            Divider()
-                .frame(height: 20)
-                .padding(.horizontal, 4)
-
-            // Batch actions
-            batchButtons
-        }
-    }
-
-    private var refreshButtons: some View {
-        HStack(spacing: 8) {
-            Button(action: { viewModel.refreshInventory() }) {
-                HStack(spacing: 4) {
-                    if viewModel.currentOperation == .refreshing {
-                        SpinnerView(controlSize: .small)
-                            .frame(width: 12, height: 12)
-                    } else {
-                        SFSymbol(name: "arrow.clockwise", size: 12)
-                    }
-                    Text("Refresh")
-                }
-            }
-            .disabled(viewModel.currentOperation != nil)
-
-            Button(action: { viewModel.scanInventory() }) {
-                HStack(spacing: 4) {
-                    SFSymbol(name: "magnifyingglass", size: 12)
-                    Text("Scan All")
-                }
-            }
-            .disabled(viewModel.currentOperation != nil)
-        }
-    }
-
-    private var slotButtons: some View {
-        HStack(spacing: 8) {
-            Button(action: {
-                if let slot = viewModel.selectedSlotId {
-                    viewModel.loadSlot(slot)
-                }
-            }) {
-                HStack(spacing: 4) {
-                    SFSymbol(name: "arrow.right.circle", size: 12)
-                    Text("Load")
-                }
-            }
-            .disabled(!canLoadSelected)
-            .helpTooltip("Load selected disc into drive")
-
-            Button(action: {
-                if let slot = viewModel.selectedSlotId {
-                    viewModel.unloadSlot(slot)
-                }
-            }) {
-                HStack(spacing: 4) {
-                    SFSymbol(name: "tray.and.arrow.up", size: 12)
-                    Text("Eject")
-                }
-            }
-            .disabled(!canUnloadSelected)
-            .helpTooltip("Eject selected disc to I/E slot")
-        }
-    }
-
-    private var batchButtons: some View {
-        HStack(spacing: 8) {
-            Button(action: {
-                showingBatchSheet = true
-                viewModel.startBatchLoad()
-            }) {
-                HStack(spacing: 4) {
-                    SFSymbol(name: "square.stack.3d.up", size: 12)
-                    Text("Load All")
-                }
-            }
-            .disabled(viewModel.currentOperation != nil || viewModel.fullSlotCount == 0)
-
-            Button(action: { viewModel.startUnloadAll() }) {
-                HStack(spacing: 4) {
-                    SFSymbol(name: "tray.and.arrow.up", size: 12)
-                    Text("Eject All")
-                }
-            }
-            .disabled(viewModel.currentOperation != nil || viewModel.fullSlotCount == 0 || !viewModel.hasIESlot)
-
-            Button(action: { showingRipSheet = true }) {
-                HStack(spacing: 4) {
-                    SFSymbol(name: "opticaldisc", size: 12)
-                    Text("Rip")
-                }
-            }
-            .disabled(viewModel.currentOperation != nil || viewModel.fullSlotCount == 0)
-        }
-    }
-
-    // MARK: - Button State Helpers
-
-    private var selectedSlot: Slot? {
-        guard let id = viewModel.selectedSlotId, id > 0, id <= viewModel.slots.count else {
-            return nil
-        }
-        return viewModel.slots[id - 1]
-    }
-
-    private var canLoadSelected: Bool {
-        guard viewModel.currentOperation == nil else { return false }
-        guard viewModel.driveStatus == .empty else { return false }
-        guard let slot = selectedSlot else { return false }
-        return slot.isFull && !slot.isInDrive
-    }
-
-    private var canUnloadSelected: Bool {
-        guard viewModel.currentOperation == nil else { return false }
-        guard viewModel.hasIESlot else { return false }
-        guard let slot = selectedSlot else { return false }
-        return slot.isFull && !slot.isInDrive
-    }
+    // MARK: - Helpers
 
     private var isWaitingForDiscRemoval: Bool {
         if case .waitingForDiscRemoval = viewModel.currentOperation {
             return true
         }
         return false
+    }
+
+    private var imageButtonLabel: String {
+        let count = viewModel.selectedSlotsForRip.count
+        if count == 0 {
+            return "Image"
+        }
+        return "Image (\(count))"
+    }
+
+    private var imageTooltip: String {
+        guard viewModel.currentOperation == nil else { return "Wait for current operation to finish" }
+        if viewModel.selectedSlotsForRip.isEmpty {
+            return "Click discs to select them for imaging"
+        }
+        return "Image \(viewModel.selectedSlotsForRip.count) disc(s) to ISO (⌘⌥I)"
+    }
+
+    private func pickFolderAndStartImaging() {
+        let panel = NSOpenPanel()
+        panel.title = "Choose Output Folder"
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.canCreateDirectories = true
+        panel.allowsMultipleSelection = false
+
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+
+        showingBatchSheet = true
+        viewModel.startBatchImaging(outputDirectory: url)
     }
 }
 
@@ -380,6 +380,7 @@ struct MainView_Previews: PreviewProvider {
     static var previews: some View {
         MainView()
             .environmentObject(ChangerViewModel.preview)
+            .environmentObject(AppSettings())
     }
 }
 #endif

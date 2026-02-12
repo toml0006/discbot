@@ -54,14 +54,14 @@ final class BatchOperationState: ObservableObject {
         imagingControl.cancel()
     }
 
-    func pauseRip() {
+    func pauseImaging() {
         guard case .imageAll = operationType else { return }
         guard isRunning else { return }
         isPaused = true
         imagingControl.setPaused(true)
     }
 
-    func resumeRip() {
+    func resumeImaging() {
         guard case .imageAll = operationType else { return }
         guard isRunning else { return }
         isPaused = false
@@ -95,8 +95,8 @@ final class BatchOperationState: ObservableObject {
     /// Run batch load operation on background thread
     func runLoadAll(
         slots: [Slot],
-        changerService: ChangerService,
-        mountService: MountService,
+        changerService: ChangerServicing,
+        mountService: MountServicing,
         onUpdate: @escaping () -> Void,
         onSlotLoaded: @escaping (Int, String, String) -> Void,
         onSlotEjected: @escaping (Int) -> Void,
@@ -201,16 +201,16 @@ final class BatchOperationState: ObservableObject {
     func runImageAll(
         slots: [Slot],
         outputDirectory: URL,
-        changerService: ChangerService,
-        mountService: MountService,
-        imagingService: ImagingService,
+        changerService: ChangerServicing,
+        mountService: MountServicing,
+        imagingService: ImagingServicing,
         catalogService: CatalogService,
         onUpdate: @escaping () -> Void,
         onSlotLoaded: @escaping (Int, String, String) -> Void,
         onSlotEjected: @escaping (Int) -> Void,
         onComplete: @escaping () -> Void
     ) {
-        let occupiedSlots = slots.filter { $0.isFull && !$0.isInDrive }
+        let occupiedSlots = slots.filter { $0.isFull || $0.isInDrive }
         guard !occupiedSlots.isEmpty else { return }
 
         DispatchQueue.main.async { [weak self] in
@@ -237,6 +237,20 @@ final class BatchOperationState: ObservableObject {
             guard let self = self else { return }
             var completedBytes: Int64 = 0
             var knownDiscSizes: [Int64] = []
+
+            // Eject any disc currently in the drive before starting
+            do {
+                let driveStatus = try? changerService.getDriveStatus()
+                if driveStatus?.hasDisc == true, let sourceSlot = driveStatus?.sourceSlot {
+                    try mountService.unmountDisc(bsdName: mountService.findDiscBSDName() ?? "", force: true)
+                    try changerService.ejectToSlot(sourceSlot)
+                    DispatchQueue.main.async {
+                        onSlotEjected(sourceSlot)
+                    }
+                }
+            } catch {
+                // Best effort - continue even if eject fails
+            }
 
             for slot in occupiedSlots {
                 if self.isCancelled {
@@ -297,7 +311,7 @@ final class BatchOperationState: ObservableObject {
                     )
 
                     DispatchQueue.main.async {
-                        self.statusText = "Ripping \(safeVolumeName)..."
+                        self.statusText = "Imaging \(safeVolumeName)..."
                         self.currentDiscName = safeVolumeName
                         self.currentDiscTransferredBytes = 0
                         self.currentDiscTotalBytes = estimatedSize
@@ -351,8 +365,8 @@ final class BatchOperationState: ObservableObject {
 
                                 let percent = Int(progress.fractionCompleted * 100)
                                 self.statusText = self.isPaused
-                                    ? "Ripping \(safeVolumeName)... paused at \(percent)%"
-                                    : "Ripping \(safeVolumeName)... \(percent)%"
+                                    ? "Imaging \(safeVolumeName)... paused at \(percent)%"
+                                    : "Imaging \(safeVolumeName)... \(percent)%"
                                 onUpdate()
                             }
                         }
@@ -459,7 +473,7 @@ final class BatchOperationState: ObservableObject {
                 self.isRunning = false
                 self.isPaused = false
                 if !self.isCancelled {
-                    self.statusText = "Complete: \(self.completedSlots.count) ripped, \(self.failedSlots.count) failed"
+                    self.statusText = "Complete: \(self.completedSlots.count) imaged, \(self.failedSlots.count) failed"
                 }
                 onUpdate()
                 onComplete()

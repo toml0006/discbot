@@ -7,6 +7,33 @@
 
 import Foundation
 
+protocol MountServicing: AnyObject {
+    func waitForDisc(timeout: TimeInterval) throws -> String
+    func findDiscBSDName() -> String?
+    func isDiscPresent() -> Bool
+    func mountDisc(bsdName: String, timeout: Int) throws -> String
+    func unmountDisc(bsdName: String, force: Bool) throws
+    func ejectDisc(bsdName: String, force: Bool) throws
+    func isMounted(bsdName: String) -> Bool
+    func getMountPoint(bsdName: String) -> String?
+    func getVolumeName(bsdName: String) -> String?
+    func waitAndMount(timeout: TimeInterval) throws -> (bsdName: String, mountPoint: String)
+}
+
+extension MountServicing {
+    func mountDisc(bsdName: String) throws -> String {
+        try mountDisc(bsdName: bsdName, timeout: 30)
+    }
+
+    func unmountDisc(bsdName: String) throws {
+        try unmountDisc(bsdName: bsdName, force: false)
+    }
+
+    func ejectDisc(bsdName: String) throws {
+        try ejectDisc(bsdName: bsdName, force: false)
+    }
+}
+
 final class MountService {
     /// Wait for a disc to appear in the drive (blocking)
     func waitForDisc(timeout: TimeInterval = 60) throws -> String {
@@ -91,6 +118,81 @@ final class MountService {
     }
 
     /// Wait for disc to be ready and mount it (blocking)
+    func waitAndMount(timeout: TimeInterval = 60) throws -> (bsdName: String, mountPoint: String) {
+        let bsdName = try waitForDisc(timeout: timeout)
+        let mountPoint = try mountDisc(bsdName: bsdName)
+        return (bsdName, mountPoint)
+    }
+}
+
+extension MountService: MountServicing {}
+
+// MARK: - Mock Mount Service
+
+/// In-memory mount service used when mocking the changer.
+final class MockMountService: MountServicing {
+    private let state: MockChangerState
+
+    init(state: MockChangerState) {
+        self.state = state
+    }
+
+    func waitForDisc(timeout: TimeInterval = 60) throws -> String {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if let bsd = findDiscBSDName() {
+                return bsd
+            }
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+        throw ChangerError.timeout
+    }
+
+    func findDiscBSDName() -> String? {
+        state.snapshotDrive().bsdName
+    }
+
+    func isDiscPresent() -> Bool {
+        state.snapshotDrive().hasDisc
+    }
+
+    func mountDisc(bsdName: String, timeout: Int = 30) throws -> String {
+        guard state.snapshotDrive().bsdName == bsdName else {
+            throw ChangerError.driveEmpty
+        }
+        // "Mount" is just state; no OS interaction.
+        return state.mountCurrentDisc()
+    }
+
+    func unmountDisc(bsdName: String, force: Bool = false) throws {
+        guard state.snapshotDrive().bsdName == bsdName else {
+            throw ChangerError.driveEmpty
+        }
+        state.unmountCurrentDisc()
+    }
+
+    func ejectDisc(bsdName: String, force: Bool = false) throws {
+        // This is typically used to ask macOS to release the disc. In mock mode, treat as unmount.
+        try unmountDisc(bsdName: bsdName, force: force)
+    }
+
+    func isMounted(bsdName: String) -> Bool {
+        let drive = state.snapshotDrive()
+        return drive.bsdName == bsdName && drive.isMounted
+    }
+
+    func getMountPoint(bsdName: String) -> String? {
+        let drive = state.snapshotDrive()
+        guard drive.bsdName == bsdName else { return nil }
+        return drive.mountPoint
+    }
+
+    func getVolumeName(bsdName: String) -> String? {
+        let drive = state.snapshotDrive()
+        guard drive.bsdName == bsdName else { return nil }
+        return drive.volumeName
+    }
+
     func waitAndMount(timeout: TimeInterval = 60) throws -> (bsdName: String, mountPoint: String) {
         let bsdName = try waitForDisc(timeout: timeout)
         let mountPoint = try mountDisc(bsdName: bsdName)

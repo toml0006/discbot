@@ -45,6 +45,17 @@ struct SFSymbol: View {
         case "list.bullet": return "☰"
         case "doc.badge.gearshape": return "📄"
         case "gearshape.2": return "⚙"
+        case "checkmark.circle.fill": return "✓"
+        case "opticaldisc": return "◉"
+        case "disc.cd.audio": return "♪"
+        case "disc.cd.data": return "◉"
+        case "disc.cd.mixed": return "◉"
+        case "disc.dvd": return "▶"
+        case "disc.unknown": return "◉"
+        case "disc.unscanned": return "○"
+        case "questionmark": return "?"
+        case "checkmark": return "✓"
+        case "xmark": return "✕"
         default: return "•"
         }
     }
@@ -187,6 +198,208 @@ struct ToggleButtonStyle: ButtonStyle {
                     .fill(isActive ? Color.accentColor.opacity(0.15) : Color.clear)
             )
             .scaleEffect(configuration.isPressed ? 0.95 : 1.0)
+    }
+}
+
+// MARK: - Segmented Action Button Style
+
+struct SegmentedActionStyle: ButtonStyle {
+    var isEnabled: Bool = true
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(size: 11))
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .foregroundColor(isEnabled ? .primary : .secondary)
+            .background(
+                configuration.isPressed
+                    ? Color.primary.opacity(0.12)
+                    : Color.primary.opacity(0.06)
+            )
+            .opacity(isEnabled ? 1.0 : 0.5)
+            .scaleEffect(configuration.isPressed ? 0.97 : 1.0)
+    }
+}
+
+/// A visually connected group of small action buttons
+struct SegmentedActions<Content: View>: View {
+    let content: Content
+
+    init(@ViewBuilder content: () -> Content) {
+        self.content = content()
+    }
+
+    var body: some View {
+        HStack(spacing: 1) {
+            content
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 5))
+        .overlay(
+            RoundedRectangle(cornerRadius: 5)
+                .stroke(Color.primary.opacity(0.12), lineWidth: 0.5)
+        )
+    }
+}
+
+// MARK: - Empty State View
+
+struct EmptyStateView: View {
+    let icon: String
+    let title: String
+    let subtitle: String
+    let buttonTitle: String
+    let buttonIcon: String
+    let action: () -> Void
+
+    var body: some View {
+        VStack(spacing: 20) {
+            Spacer()
+
+            SFSymbol(name: icon, size: 56)
+                .foregroundColor(.secondary)
+
+            VStack(spacing: 6) {
+                Text(title)
+                    .font(.title)
+                    .fontWeight(.medium)
+                Text(subtitle)
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+            }
+
+            Button(action: action) {
+                HStack(spacing: 6) {
+                    SFSymbol(name: buttonIcon, size: 14)
+                    Text(buttonTitle)
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 8)
+            }
+
+            Spacer()
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(40)
+    }
+}
+
+// MARK: - Key Event Handler
+
+struct KeyEventHandler: NSViewRepresentable {
+    let onKeyDown: (UInt16, NSEvent.ModifierFlags) -> Bool
+
+    func makeNSView(context: Context) -> KeyEventNSView {
+        let view = KeyEventNSView()
+        view.onKeyDown = onKeyDown
+        return view
+    }
+
+    func updateNSView(_ nsView: KeyEventNSView, context: Context) {
+        nsView.onKeyDown = onKeyDown
+    }
+
+    class KeyEventNSView: NSView {
+        var onKeyDown: ((UInt16, NSEvent.ModifierFlags) -> Bool)?
+
+        override var acceptsFirstResponder: Bool { true }
+
+        override func keyDown(with event: NSEvent) {
+            if let handler = onKeyDown, handler(event.keyCode, event.modifierFlags) {
+                return
+            }
+            super.keyDown(with: event)
+        }
+    }
+}
+
+// MARK: - Search Field (NSSearchField wrapper for 10.15)
+
+struct SearchFieldView: NSViewRepresentable {
+    @Binding var text: String
+    var placeholder: String = "Search"
+
+    func makeNSView(context: Context) -> NSSearchField {
+        let field = NSSearchField()
+        field.placeholderString = placeholder
+        field.delegate = context.coordinator
+        field.sendsSearchStringImmediately = true
+        field.sendsWholeSearchString = false
+        return field
+    }
+
+    func updateNSView(_ nsView: NSSearchField, context: Context) {
+        if nsView.stringValue != text {
+            nsView.stringValue = text
+        }
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(text: $text)
+    }
+
+    class Coordinator: NSObject, NSSearchFieldDelegate {
+        var text: Binding<String>
+
+        init(text: Binding<String>) {
+            self.text = text
+        }
+
+        func controlTextDidChange(_ obj: Notification) {
+            if let field = obj.object as? NSSearchField {
+                text.wrappedValue = field.stringValue
+            }
+        }
+    }
+}
+
+// MARK: - PopUp Button (NSPopUpButton wrapper for 10.15)
+
+struct PopUpButtonView<T: Hashable>: NSViewRepresentable {
+    let items: [(title: String, value: T)]
+    @Binding var selection: T
+
+    func makeNSView(context: Context) -> NSPopUpButton {
+        let button = NSPopUpButton(frame: .zero, pullsDown: false)
+        button.removeAllItems()
+        for item in items {
+            button.addItem(withTitle: item.title)
+        }
+        if let index = items.firstIndex(where: { $0.value == selection }) {
+            button.selectItem(at: index)
+        }
+        button.target = context.coordinator
+        button.action = #selector(Coordinator.selectionChanged(_:))
+        return button
+    }
+
+    func updateNSView(_ nsView: NSPopUpButton, context: Context) {
+        if let index = items.firstIndex(where: { $0.value == selection }) {
+            if nsView.indexOfSelectedItem != index {
+                nsView.selectItem(at: index)
+            }
+        }
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(items: items, selection: $selection)
+    }
+
+    class Coordinator: NSObject {
+        let items: [(title: String, value: T)]
+        var selection: Binding<T>
+
+        init(items: [(title: String, value: T)], selection: Binding<T>) {
+            self.items = items
+            self.selection = selection
+        }
+
+        @objc func selectionChanged(_ sender: NSPopUpButton) {
+            let index = sender.indexOfSelectedItem
+            if index >= 0 && index < items.count {
+                selection.wrappedValue = items[index].value
+            }
+        }
     }
 }
 

@@ -13,39 +13,52 @@ struct BatchOperationSheet: View {
     @Environment(\.presentationMode) var presentationMode
 
     var body: some View {
-        VStack(spacing: 24) {
-            // Header
-            headerSection
+        VStack(spacing: 0) {
+            ScrollView {
+                VStack(spacing: 20) {
+                    // Header
+                    headerSection
 
-            progressSection
+                    progressSection
 
-            // Status
-            Text(batchState.statusText)
-                .font(.subheadline)
-                .foregroundColor(.secondary)
-                .frame(height: 20)
+                    // Status
+                    Text(batchState.statusText)
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+                        .frame(height: 20)
 
-            if case .imageAll = batchState.operationType {
-                rippingStatsSection
+                    if case .imageAll = batchState.operationType {
+                        imagingStatsSection
+                    }
+
+                    // Current metadata (if available)
+                    if let metadata = batchState.currentDiscMetadata {
+                        metadataSection(metadata: metadata)
+                    }
+
+                    // Errors
+                    if !batchState.failedSlots.isEmpty {
+                        errorsSection
+                    }
+
+                    // Completion summary
+                    if batchState.isComplete || batchState.isCancelled {
+                        completionSummary
+                    }
+                }
+                .padding(.horizontal, 28)
+                .padding(.top, 28)
+                .padding(.bottom, 12)
             }
 
-            // Current metadata (if available)
-            if let metadata = batchState.currentDiscMetadata {
-                metadataSection(metadata: metadata)
-            }
+            Divider()
 
-            // Errors
-            if !batchState.failedSlots.isEmpty {
-                errorsSection
-            }
-
-            Spacer()
-
-            // Actions
+            // Actions pinned at bottom
             actionsSection
+                .padding(.horizontal, 28)
+                .padding(.vertical, 16)
         }
-        .padding(28)
-        .frame(width: 460, height: 480)
+        .frame(minWidth: 480, maxWidth: 480, minHeight: 350, maxHeight: 600)
     }
 
     private var headerSection: some View {
@@ -100,7 +113,7 @@ struct BatchOperationSheet: View {
         }
     }
 
-    private var rippingStatsSection: some View {
+    private var imagingStatsSection: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
                 Text("Current Disc")
@@ -202,6 +215,52 @@ struct BatchOperationSheet: View {
         )
     }
 
+    private var completionSummary: some View {
+        let succeeded = batchState.completedSlots.count
+        let failed = batchState.failedSlots.count
+        let total = batchState.totalCount
+
+        return VStack(spacing: 8) {
+            if batchState.isCancelled {
+                HStack(spacing: 6) {
+                    SFSymbol(name: "xmark", size: 16)
+                        .foregroundColor(.orange)
+                    Text("Cancelled")
+                        .font(.subheadline)
+                        .fontWeight(.medium)
+                        .foregroundColor(.orange)
+                }
+                Text("\(succeeded) of \(total) completed before cancellation")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            } else if failed == 0 {
+                HStack(spacing: 6) {
+                    SFSymbol(name: "checkmark.circle.fill", size: 16)
+                        .foregroundColor(.green)
+                    Text("All \(succeeded) discs completed successfully")
+                        .font(.subheadline)
+                        .fontWeight(.medium)
+                        .foregroundColor(.green)
+                }
+            } else {
+                HStack(spacing: 6) {
+                    SFSymbol(name: "exclamationmark.triangle.fill", size: 16)
+                        .foregroundColor(.orange)
+                    Text("\(succeeded) completed, \(failed) failed")
+                        .font(.subheadline)
+                        .fontWeight(.medium)
+                        .foregroundColor(.orange)
+                }
+            }
+        }
+        .padding(.vertical, 8)
+        .padding(.horizontal, 16)
+        .background(
+            RoundedRectangle(cornerRadius: 10)
+                .fill(Color.primary.opacity(0.05))
+        )
+    }
+
     private var actionsSection: some View {
         HStack(spacing: 12) {
             if batchState.isComplete || batchState.isCancelled {
@@ -212,7 +271,7 @@ struct BatchOperationSheet: View {
             } else {
                 if case .imageAll = batchState.operationType {
                     Button(action: {
-                        batchState.isPaused ? batchState.resumeRip() : batchState.pauseRip()
+                        batchState.isPaused ? batchState.resumeImaging() : batchState.pauseImaging()
                     }) {
                         Text(batchState.isPaused ? "Resume" : "Pause")
                             .frame(minWidth: 80)

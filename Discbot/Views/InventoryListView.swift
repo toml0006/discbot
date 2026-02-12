@@ -14,6 +14,8 @@ struct InventoryListView: View {
         ScrollView {
             if viewModel.slots.isEmpty {
                 emptyState
+            } else if viewModel.filteredSlots.isEmpty {
+                filteredEmptyState
             } else {
                 listContent
             }
@@ -32,20 +34,32 @@ struct InventoryListView: View {
             Divider()
 
             // Slot rows
-            ForEach(viewModel.slots, id: \.id) { slot in
+            ForEach(viewModel.filteredSlots, id: \.id) { slot in
                 SlotRowView(
                     slot: slot,
-                    isSelected: slot.id == viewModel.selectedSlotId
+                    isSelected: slot.id == viewModel.selectedSlotId,
+                    isSelectedForRip: viewModel.selectedSlotsForRip.contains(slot.id),
+                    onLoad: (slot.isFull && !slot.isInDrive) ? { viewModel.loadSlotWithEjectIfNeeded(slot.id) } : nil
                 )
                 .contentShape(Rectangle())
                 .onTapGesture {
                     viewModel.selectedSlotId = slot.id
+                    if slot.isFull || slot.isInDrive {
+                        let modifiers = NSApp.currentEvent?.modifierFlags ?? []
+                        if modifiers.contains(.shift) {
+                            viewModel.extendSlotSelectionForRip(to: slot.id)
+                        } else if modifiers.contains(.command) {
+                            viewModel.toggleSlotForRip(slot.id)
+                        } else {
+                            viewModel.selectSlotForRip(slot.id)
+                        }
+                    }
                 }
                 .gesture(
                     TapGesture(count: 2)
                         .onEnded {
                             if slot.isFull && !slot.isInDrive {
-                                viewModel.loadSlot(slot.id)
+                                viewModel.loadSlotWithEjectIfNeeded(slot.id)
                             }
                         }
                 )
@@ -65,17 +79,23 @@ struct InventoryListView: View {
                 .foregroundColor(.secondary)
                 .frame(width: 60, alignment: .leading)
 
-            Text("Status")
+            Text("Type")
                 .font(.caption)
                 .fontWeight(.medium)
                 .foregroundColor(.secondary)
                 .frame(width: 100, alignment: .leading)
 
-            Text("Address")
+            Text("Label")
                 .font(.caption)
                 .fontWeight(.medium)
                 .foregroundColor(.secondary)
-                .frame(width: 80, alignment: .leading)
+                .frame(width: 180, alignment: .leading)
+
+            Text("Status")
+                .font(.caption)
+                .fontWeight(.medium)
+                .foregroundColor(.secondary)
+                .frame(width: 120, alignment: .leading)
 
             Spacer()
         }
@@ -91,91 +111,92 @@ struct InventoryListView: View {
             .disabled(viewModel.currentOperation != nil || viewModel.driveStatus != .empty)
         }
 
-        // Eject to I/E slot (only if slot has disc and not in drive)
+        // Scan disc (load, detect metadata, eject back)
+        if slot.isFull && !slot.isInDrive {
+            Button(action: { viewModel.scanSlotDisc(slot.id) }) {
+                Text("Scan Disc")
+            }
+            .disabled(viewModel.currentOperation != nil || viewModel.driveStatus != .empty)
+        }
+
+        // Eject disc (only if slot has disc and not in drive)
         if slot.isFull && !slot.isInDrive && viewModel.hasIESlot {
             Button(action: { viewModel.unloadSlot(slot.id) }) {
-                Text("Eject to I/E Slot")
+                Text("Eject Disc")
             }
             .disabled(viewModel.currentOperation != nil)
         }
 
-        // Import from I/E slot (only if slot is empty)
+        // Load from I/E (only if slot is empty)
         if !slot.isFull && !slot.isInDrive && viewModel.hasIESlot {
             Button(action: { viewModel.importToSlot(slot.id) }) {
-                Text("Import from I/E Slot")
+                Text("Load from I/E")
             }
             .disabled(viewModel.currentOperation != nil)
         }
 
-        // Eject here (if disc is in drive, eject to this slot)
+        // Eject drive disc here (if disc is in drive, eject to this slot)
         if !slot.isFull && !slot.isInDrive {
             if case .loaded = viewModel.driveStatus {
                 Button(action: { viewModel.ejectDisc(toSlot: slot.id) }) {
-                    Text("Eject Drive Here")
+                    Text("Eject Here")
                 }
                 .disabled(viewModel.currentOperation != nil)
             }
         }
     }
 
-    private var emptyState: some View {
-        VStack(spacing: 20) {
+    private var filteredEmptyState: some View {
+        VStack(spacing: 12) {
             Spacer()
-
-            if !viewModel.isConnected {
-                SFSymbol(name: "bolt.horizontal.circle", size: 56)
-                    .foregroundColor(.secondary)
-
-                VStack(spacing: 6) {
-                    Text("Not Connected")
-                        .font(.title)
-                        .fontWeight(.medium)
-                    Text("Waiting for changer connection...")
-                        .font(.subheadline)
-                        .foregroundColor(.secondary)
-                }
-
-                Button(action: { viewModel.connect() }) {
-                    HStack(spacing: 6) {
-                        SFSymbol(name: "arrow.clockwise", size: 14)
-                        Text("Retry Connection")
-                    }
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 8)
-                }
-            } else {
-                SFSymbol(name: "circle.grid.3x3", size: 56)
-                    .foregroundColor(.secondary)
-
-                VStack(spacing: 6) {
-                    Text("No Slots Found")
-                        .font(.title)
-                        .fontWeight(.medium)
-                    Text("Run a scan to detect all slots")
-                        .font(.subheadline)
-                        .foregroundColor(.secondary)
-                }
-
-                Button(action: { viewModel.scanInventory() }) {
-                    HStack(spacing: 6) {
-                        SFSymbol(name: "magnifyingglass", size: 14)
-                        Text("Scan Inventory")
-                    }
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 8)
-                }
+            SFSymbol(name: "magnifyingglass", size: 36)
+                .foregroundColor(.secondary)
+            Text("No matching slots")
+                .font(.headline)
+                .foregroundColor(.secondary)
+            Text("Try adjusting your search or filter")
+                .font(.subheadline)
+                .foregroundColor(.secondary)
+            Button("Clear Filters") {
+                viewModel.searchText = ""
+                viewModel.slotFilter = .all
             }
-
+            .font(.subheadline)
             Spacer()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .padding(40)
+    }
+
+    @ViewBuilder
+    private var emptyState: some View {
+        if !viewModel.isConnected {
+            EmptyStateView(
+                icon: "bolt.horizontal.circle",
+                title: "Not Connected",
+                subtitle: "Waiting for changer connection...",
+                buttonTitle: "Retry Connection",
+                buttonIcon: "arrow.clockwise",
+                action: { viewModel.connect() }
+            )
+        } else {
+            EmptyStateView(
+                icon: "circle.grid.3x3",
+                title: "No Slots Found",
+                subtitle: "Run a scan to detect all slots",
+                buttonTitle: "Scan Inventory",
+                buttonIcon: "magnifyingglass",
+                action: { viewModel.scanInventory() }
+            )
+        }
     }
 }
 
 struct SlotRowView: View {
     let slot: Slot
     let isSelected: Bool
+    var isSelectedForRip: Bool = false
+    var onLoad: (() -> Void)?
     @State private var isHovered = false
 
     var body: some View {
@@ -195,7 +216,8 @@ struct SlotRowView: View {
             slotNumberColumn
             statusBadge
                 .frame(width: 100, alignment: .leading)
-            addressColumn
+            volumeLabelColumn
+            imagingStatusColumn
             Spacer()
             hoverActions
         }
@@ -211,17 +233,54 @@ struct SlotRowView: View {
         .frame(width: 60, alignment: .leading)
     }
 
-    private var addressColumn: some View {
-        Text(String(format: "0x%04X", slot.address))
+    private var volumeLabelColumn: some View {
+        Text(slot.volumeLabel ?? "")
             .font(.system(.caption, design: .monospaced))
-            .foregroundColor(.secondary)
-            .frame(width: 80, alignment: .leading)
+            .foregroundColor(.primary)
+            .lineLimit(1)
+            .truncationMode(.tail)
+            .frame(width: 180, alignment: .leading)
     }
+
+    private var imagingStatusColumn: some View {
+        HStack(spacing: 4) {
+            switch slot.backupStatus {
+            case .backedUp(let date):
+                SFSymbol(name: "checkmark.circle.fill", size: 10)
+                    .foregroundColor(.green)
+                Text(Self.shortDateFormatter.string(from: date))
+                    .font(.system(.caption, design: .rounded))
+                    .foregroundColor(.secondary)
+            case .failed:
+                SFSymbol(name: "exclamationmark.triangle.fill", size: 10)
+                    .foregroundColor(.red)
+                Text("Failed")
+                    .font(.system(.caption, design: .rounded))
+                    .foregroundColor(.red)
+            case .notBackedUp:
+                if slot.isFull || slot.isInDrive {
+                    SFSymbol(name: "circle.dashed", size: 10)
+                        .foregroundColor(.secondary)
+                    Text("Not imaged")
+                        .font(.system(.caption, design: .rounded))
+                        .foregroundColor(.secondary)
+                }
+            }
+        }
+        .frame(width: 120, alignment: .leading)
+    }
+
+    private static let shortDateFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateStyle = .short
+        f.timeStyle = .none
+        return f
+    }()
 
     @ViewBuilder
     private var hoverActions: some View {
-        if isHovered && slot.isFull && !slot.isInDrive {
-            Button("Load") {}
+        if isHovered && slot.isFull && !slot.isInDrive, let onLoad = onLoad {
+            Button("Load") { onLoad() }
                 .buttonStyle(BorderlessButtonStyle())
                 .font(.caption)
         }
@@ -248,12 +307,11 @@ struct SlotRowView: View {
     @ViewBuilder
     private var statusBadge: some View {
         if slot.isInDrive {
-            // Blue circle indicates in-drive status, no badge needed
-            EmptyView()
+            CapsuleBadge(text: "In Drive", color: .accentColor)
         } else if slot.hasException {
             CapsuleBadge(text: "Exception", color: .red)
         } else if slot.isFull {
-            CapsuleBadge(text: "Full", color: .green)
+            CapsuleBadge(text: slot.discType.label, color: discTypeBadgeColor)
         } else {
             Text("Empty")
                 .font(.caption)
@@ -261,8 +319,21 @@ struct SlotRowView: View {
         }
     }
 
+    private var discTypeBadgeColor: Color {
+        switch slot.discType {
+        case .audioCDDA: return .purple
+        case .dvd: return .green
+        case .dataCD: return Color(NSColor.systemTeal)
+        case .mixedModeCD: return Color(NSColor.systemIndigo)
+        case .unknown: return Color(NSColor.systemGray)
+        case .unscanned: return .green
+        }
+    }
+
     private var rowBackground: Color {
-        if isSelected {
+        if isSelectedForRip {
+            return Color.orange.opacity(0.15)
+        } else if isSelected {
             return Color.accentColor.opacity(0.15)
         } else if isHovered {
             return Color.primary.opacity(0.03)

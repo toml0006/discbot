@@ -22,7 +22,7 @@ Or open `discbot.xcodeproj` in Xcode and build.
 
 Discbot is a native macOS SwiftUI app for controlling SCSI media changers, specifically the Sony VGP-XL1B 200-disc DVD changer. It communicates with hardware via FireWire using IOKit and the mchanger C library.
 
-**Platform constraint:** FireWire support was removed in macOS 16 (Tahoe). The app targets macOS 10.15-15 only.
+**Platform constraint:** FireWire support was removed in macOS Tahoe (macOS 26). The app targets macOS 10.15-15 only.
 
 ## Architecture
 

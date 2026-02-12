@@ -1,20 +1,83 @@
-# Discbot
+<p align="center">
+  <img src="docs/icon.png" width="128" height="128" alt="Discbot icon">
+</p>
 
-A macOS app for controlling SCSI media changer devices. Built for the [Sony VGP-XL1B](https://www.sony.com/electronics/support/home-video-media-changers/vgp-xl1b) 200-disc changer, but should work with other SCSI-compliant media changers.
+<h1 align="center">Discbot</h1>
+
+<p align="center">
+  A macOS app for controlling SCSI media changer devices.<br>
+  Built for the <a href="https://www.sony.com/electronics/support/home-video-media-changers/vgp-xl1b">Sony VGP-XL1B</a> 200-disc changer, but should work with other SCSI-compliant media changers.
+</p>
+
+<p align="center">
+  <img src="docs/screenshot-grid.png" width="720" alt="Grid view">
+</p>
 
 ## Features
 
-- Visual inventory of all disc slots
-- Load and unload discs with a click
-- View mounted disc metadata
-- Batch operations for imaging multiple discs
+- **Visual inventory** — Grid and list views of all disc slots with color-coded status indicators
+- **Disc operations** — Load, eject, mount, and unmount discs with a click or keyboard shortcut
+- **Batch imaging** — Select multiple discs and image them to ISO files sequentially
+- **Disc scanning** — Auto-detect disc type and volume label for any slot
+- **Search and filter** — Find discs by name or filter by status (full, empty, imaged)
+- **Zoom** — Adjustable grid tile size from compact to detailed
+- **Keyboard navigation** — Arrow keys, Enter to load, Escape to deselect
+- **Quit protection** — Warns before quitting during active operations and recovers gracefully from crashes
 
 ## Requirements
 
 - macOS 10.15 (Catalina) through macOS 15 (Sequoia)
-- A SCSI media changer device connected via FireWire or Thunderbolt-to-FireWire adapter
+- A SCSI media changer connected via FireWire or Thunderbolt-to-FireWire adapter
 
-> **Important:** macOS 16 (Tahoe) [removed FireWire support entirely](https://tidbits.com/2025/09/19/support-for-firewire-removed-from-macos-26-tahoe/). If your changer connects via FireWire, you must use macOS 15 (Sequoia) or earlier. The app will compile and run on Tahoe, but will show a warning at startup and won't be able to connect to FireWire devices.
+> **Note:** macOS Tahoe (macOS 26) removed FireWire support. Discbot will compile on Tahoe but cannot connect to FireWire devices. A warning is shown at startup.
+
+## Usage
+
+### Connecting
+
+On launch, Discbot automatically connects to the first detected SCSI media changer. The header shows the device name and slot count. If no device is found, click **Retry Connection**.
+
+For testing without hardware, enable **Mock Changer** in Preferences (`⌘,`) to simulate a 200-slot changer.
+
+### Inventory
+
+The main window shows all disc slots. Switch between views using the footer toggle:
+
+- **Grid view** — Compact tile grid with zoom slider. Tiles are color-coded: green = full, blue = in drive, red = exception, grey = empty.
+- **List view** — Table with slot number, disc type, volume label, and imaging status.
+
+Use the **search bar** to filter by volume label, or the **filter dropdown** to show only full, empty, or imaged slots.
+
+### Loading and Ejecting Discs
+
+- **Click** a slot to select it, then click **Load** in the header to move the disc into the drive
+- **Double-click** a full slot to load it immediately (ejects any disc currently in the drive first)
+- **Right-click** a slot for context menu options: Load into Drive, Scan Disc, Eject Disc, Eject Here
+- Once loaded, use **Mount/Unmount** to control the filesystem and **Eject** to return the disc to its slot
+
+### Imaging Discs
+
+1. **Select discs** — Click to select one disc, `⌘-click` to toggle, `⇧-click` for range selection
+2. Click the **Image** button in the toolbar (or `⌘⌥I`)
+3. Choose an output folder
+4. Discbot loads each disc, mounts it, creates an ISO via `hdiutil`, then ejects it back — fully automated
+
+The batch imaging sheet shows progress for each disc with elapsed time, file size, and overall status.
+
+### Keyboard Shortcuts
+
+| Shortcut | Action |
+|----------|--------|
+| `⌘R` | Refresh inventory |
+| `⌘⇧R` | Full SCSI scan |
+| `⌘L` | Load selected slot |
+| `⌘E` | Eject disc to slot |
+| `⌘U` | Mount/Unmount disc |
+| `⌘⌥I` | Image selected discs |
+| `⌘+` / `⌘-` | Zoom in/out |
+| Arrow keys | Navigate grid |
+| Enter | Load selected slot |
+| Escape | Deselect |
 
 ## Build
 
@@ -24,12 +87,22 @@ Clone with submodules:
 git clone --recurse-submodules https://github.com/toml0006/discbot.git
 ```
 
-Open `discbot.xcodeproj` in Xcode and build.
+Build via Xcode CLI:
+
+```sh
+xcodebuild -project discbot.xcodeproj \
+  -scheme Discbot \
+  -destination 'platform=macOS' \
+  -configuration Release \
+  build
+```
+
+Or open `discbot.xcodeproj` in Xcode and build.
 
 ## See also
 
-- [mchanger](https://github.com/toml0006/mchanger) - CLI tool and library for controlling media changers
+- [mchanger](https://github.com/toml0006/mchanger) — CLI tool and C library for controlling SCSI media changers
 
 ## License
 
-MIT License - See LICENSE file for details.
+MIT License — See [LICENSE](LICENSE) for details.
