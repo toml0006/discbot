@@ -31,6 +31,9 @@
 		AA0018 /* CompatViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0018; };
 		AA0019 /* InventoryListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0019; };
 		AA0024 /* RipConfigSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0024; };
+		AA0050 /* CarouselSceneController.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0050; };
+		AA0051 /* CarouselSceneView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0051; };
+		AA0052 /* InventoryCarouselView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0052; };
 		/* Persistence files */
 		AA0040 /* Database.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0040; };
 		AA0041 /* DiscRecord.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0041; };
@@ -72,6 +75,9 @@
 		AB0018 /* CompatViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CompatViews.swift; sourceTree = "<group>"; };
 		AB0019 /* InventoryListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InventoryListView.swift; sourceTree = "<group>"; };
 		AB0024 /* RipConfigSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RipConfigSheet.swift; sourceTree = "<group>"; };
+		AB0050 /* CarouselSceneController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CarouselSceneController.swift; sourceTree = "<group>"; };
+		AB0051 /* CarouselSceneView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CarouselSceneView.swift; sourceTree = "<group>"; };
+		AB0052 /* InventoryCarouselView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InventoryCarouselView.swift; sourceTree = "<group>"; };
 		/* Persistence files */
 		AB0040 /* Database.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Database.swift; sourceTree = "<group>"; };
 		AB0041 /* DiscRecord.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiscRecord.swift; sourceTree = "<group>"; };
@@ -215,6 +221,9 @@
 				AB0015 /* BatchOperationSheet.swift */,
 				AB0018 /* CompatViews.swift */,
 				AB0024 /* RipConfigSheet.swift */,
+				AB0050 /* CarouselSceneController.swift */,
+				AB0051 /* CarouselSceneView.swift */,
+				AB0052 /* InventoryCarouselView.swift */,
 			);
 			path = Views;
 			sourceTree = "<group>";
@@ -338,6 +347,9 @@
 				AA0015 /* BatchOperationSheet.swift in Sources */,
 				AA0018 /* CompatViews.swift in Sources */,
 				AA0024 /* RipConfigSheet.swift in Sources */,
+				AA0050 /* CarouselSceneController.swift in Sources */,
+				AA0051 /* CarouselSceneView.swift in Sources */,
+				AA0052 /* InventoryCarouselView.swift in Sources */,
 				AA0016 /* ImagingService.swift in Sources */,
 				AA0017 /* MetadataService.swift in Sources */,
 				AA0020 /* mchanger.c in Sources */,

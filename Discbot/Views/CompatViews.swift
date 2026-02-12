@@ -56,6 +56,8 @@ struct SFSymbol: View {
         case "questionmark": return "?"
         case "checkmark": return "✓"
         case "xmark": return "✕"
+        case "rotate.3d": return "⟳"
+        case "magnifyingglass.circle": return "🔍"
         default: return "•"
         }
     }

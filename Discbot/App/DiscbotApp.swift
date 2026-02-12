@@ -306,6 +306,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         viewMenuItem.submenu = viewMenu
         viewMenu.addItem(withTitle: "Grid View", action: #selector(showGridView), keyEquivalent: "1")
         viewMenu.addItem(withTitle: "List View", action: #selector(showListView), keyEquivalent: "2")
+        viewMenu.addItem(withTitle: "Carousel View", action: #selector(showCarouselView), keyEquivalent: "3")
         viewMenu.addItem(NSMenuItem.separator())
 
         let zoomInItem = NSMenuItem(title: "Zoom In", action: #selector(zoomIn), keyEquivalent: "=")
@@ -488,6 +489,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
 
     @objc func showListView() {
         NotificationCenter.default.post(name: .menuSetViewMode, object: "list")
+    }
+
+    @objc func showCarouselView() {
+        NotificationCenter.default.post(name: .menuSetViewMode, object: "carousel")
     }
 
     @objc func zoomIn() {

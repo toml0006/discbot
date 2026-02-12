@@ -10,6 +10,7 @@ import SwiftUI
 enum InventoryViewMode: String {
     case grid
     case list
+    case carousel
 }
 
 struct MainView: View {
@@ -54,11 +55,13 @@ struct MainView: View {
 
             Divider()
 
-            // Inventory view (grid or list)
+            // Inventory view
             if viewMode == .grid {
                 InventoryGridView(zoomScale: zoomScale)
-            } else {
+            } else if viewMode == .list {
                 InventoryListView()
+            } else {
+                InventoryCarouselView()
             }
 
             Divider()
@@ -96,7 +99,12 @@ struct MainView: View {
         // Menu bar notifications
         .onReceive(NotificationCenter.default.publisher(for: .menuSetViewMode)) { notification in
             if let mode = notification.object as? String {
-                viewMode = mode == "grid" ? .grid : .list
+                switch mode {
+                case "grid": viewMode = .grid
+                case "list": viewMode = .list
+                case "carousel": viewMode = .carousel
+                default: break
+                }
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: .menuZoomIn)) { _ in
@@ -294,6 +302,12 @@ struct MainView: View {
                     .frame(width: 26, height: 20)
             }
             .buttonStyle(ToggleButtonStyle(isActive: viewMode == .list))
+
+            Button(action: { viewMode = .carousel }) {
+                SFSymbol(name: "rotate.3d", size: 13)
+                    .frame(width: 26, height: 20)
+            }
+            .buttonStyle(ToggleButtonStyle(isActive: viewMode == .carousel))
         }
         .padding(2)
         .background(
