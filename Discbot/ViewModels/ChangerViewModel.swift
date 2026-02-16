@@ -9,11 +9,37 @@ import Foundation
 import SwiftUI
 import Combine
 import DiskArbitration
+import os.log
 
 final class ChangerViewModel: ObservableObject {
+    private static let log = OSLog(
+        subsystem: Bundle.main.bundleIdentifier ?? "Discbot",
+        category: "ChangerViewModel"
+    )
+
+    private static func logType(for error: ChangerError) -> OSLogType {
+        switch error {
+        case .driveNotEmpty, .driveEmpty, .slotEmpty, .slotOccupied, .cancelled:
+            return .info
+        default:
+            return .error
+        }
+    }
+
     // Connection state
     @Published var isConnected = false
-    @Published var connectionError: ChangerError?
+    @Published var connectionError: ChangerError? {
+        didSet {
+            guard let connectionError = connectionError else { return }
+            os_log(
+                "connectionError while operation=%{public}@: %{public}@",
+                log: Self.log,
+                type: Self.logType(for: connectionError),
+                String(describing: currentOperation),
+                connectionError.localizedDescription
+            )
+        }
+    }
 
     // Device info
     @Published var deviceVendor: String?
@@ -28,6 +54,14 @@ final class ChangerViewModel: ObservableObject {
                 Self.setDirtyFlag(sourceSlot: slot)
             case .empty:
                 Self.clearDirtyFlag()
+            case .error(let message):
+                os_log(
+                    "driveStatus error while operation=%{public}@: %{public}@",
+                    log: Self.log,
+                    type: .error,
+                    String(describing: currentOperation),
+                    message
+                )
             default:
                 break
             }
@@ -542,8 +576,23 @@ final class ChangerViewModel: ObservableObject {
                     self.operationStatusText = "Mounting disc..."
                 }
 
-                // Mount
-                let mountPoint = try self.mountService.mountDisc(bsdName: bsdName)
+                // Mount if possible. Some media (e.g. audio CDs) have no filesystem mount.
+                let discType = self.imagingService.detectDiscType(bsdName: bsdName)
+                let allowMountless = (discType == .audioCDDA)
+                let mountPoint: String?
+                do {
+                    mountPoint = try self.mountService.mountDisc(bsdName: bsdName)
+                } catch let error as ChangerError {
+                    if
+                        allowMountless,
+                        case .mountFailed(let reason) = error,
+                        reason == "No mount point returned"
+                    {
+                        mountPoint = self.mountService.getMountPoint(bsdName: bsdName)
+                    } else {
+                        throw error
+                    }
+                }
 
                 DispatchQueue.main.async {
                     self.driveStatus = .loaded(sourceSlot: slotNumber, mountPoint: mountPoint)

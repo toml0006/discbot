@@ -7,6 +7,7 @@
 
 import Foundation
 import Darwin
+import os.log
 
 struct ImagingProgressInfo {
     let fractionCompleted: Double
@@ -39,6 +40,11 @@ protocol ImagingServicing: AnyObject {
 }
 
 final class ImagingService: ImagingServicing {
+    private static let log = OSLog(
+        subsystem: Bundle.main.bundleIdentifier ?? "Discbot",
+        category: "ImagingService"
+    )
+
     final class ImagingControl {
         private let lock = NSLock()
         private var process: Process?
@@ -201,6 +207,9 @@ final class ImagingService: ImagingServicing {
         let progressQueue = DispatchQueue(label: "imaging.progress")
         let startTime = Date()
         var outputBuffer = ""
+        var outputTail: [String] = []
+        let maxOutputTailLines = 60
+        let outputTailLock = NSLock()
         pipe.fileHandleForReading.readabilityHandler = { handle in
             let data = handle.availableData
             guard !data.isEmpty else { return }
@@ -211,6 +220,16 @@ final class ImagingService: ImagingServicing {
 
                 // Parse puppetstrings format: PERCENT:n.n
                 for component in components.dropLast() {
+                    let trimmed = component.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !trimmed.isEmpty {
+                        outputTailLock.lock()
+                        outputTail.append(trimmed)
+                        if outputTail.count > maxOutputTailLines {
+                            outputTail.removeFirst(outputTail.count - maxOutputTailLines)
+                        }
+                        outputTailLock.unlock()
+                    }
+
                     if component.hasPrefix("PERCENT:") {
                         if let value = Double(component.dropFirst(8)) {
                             progressQueue.async {
@@ -242,7 +261,19 @@ final class ImagingService: ImagingServicing {
             }
         }
 
-        try process.run()
+        do {
+            try process.run()
+        } catch {
+            pipe.fileHandleForReading.readabilityHandler = nil
+            os_log(
+                "createISOImage failed to launch hdiutil for %{public}@: %{public}@",
+                log: Self.log,
+                type: .error,
+                bsdName,
+                error.localizedDescription
+            )
+            throw error
+        }
         control?.attach(process: process)
         process.waitUntilExit()
         control?.attach(process: nil)
@@ -254,7 +285,23 @@ final class ImagingService: ImagingServicing {
         }
 
         guard process.terminationStatus == 0 else {
-            throw ImagingError.processFailed(process.terminationStatus, "hdiutil failed")
+            outputTailLock.lock()
+            let tailSnapshot = outputTail
+            outputTailLock.unlock()
+            let diagnostics = tailSnapshot
+                .filter { !$0.hasPrefix("PERCENT:") }
+                .suffix(12)
+                .joined(separator: " | ")
+            let reason = diagnostics.isEmpty ? "hdiutil failed" : "hdiutil failed: \(diagnostics)"
+            os_log(
+                "createISOImage failed for %{public}@: status=%{public}d %{public}@",
+                log: Self.log,
+                type: .error,
+                bsdName,
+                process.terminationStatus,
+                reason
+            )
+            throw ImagingError.processFailed(process.terminationStatus, reason)
         }
 
         // Rename .cdr to .iso (they are equivalent for data discs)

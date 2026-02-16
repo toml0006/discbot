@@ -7,6 +7,7 @@
 
 import Foundation
 import Combine
+import os.log
 
 final class BatchOperationState: ObservableObject {
     enum OperationType: Equatable {
@@ -38,6 +39,10 @@ final class BatchOperationState: ObservableObject {
     @Published var overallETASeconds: TimeInterval?
 
     private let imagingControl = ImagingService.ImagingControl()
+    private static let log = OSLog(
+        subsystem: Bundle.main.bundleIdentifier ?? "Discbot",
+        category: "BatchOperation"
+    )
 
     var progress: Double {
         guard totalCount > 0 else { return 0 }
@@ -92,13 +97,58 @@ final class BatchOperationState: ObservableObject {
         imagingControl.reset()
     }
 
+    private func mountDiscIfAvailable(
+        bsdName: String,
+        mountService: MountServicing,
+        allowMountless: Bool
+    ) throws -> String? {
+        if let existing = mountService.getMountPoint(bsdName: bsdName) {
+            return existing
+        }
+
+        do {
+            return try mountService.mountDisc(bsdName: bsdName)
+        } catch let error as ChangerError {
+            if
+                allowMountless,
+                case .mountFailed(let reason) = error,
+                reason == "No mount point returned"
+            {
+                // Media without a filesystem (for example audio CDs) can still be imaged raw.
+                return mountService.getMountPoint(bsdName: bsdName)
+            }
+            throw error
+        }
+    }
+
+    private func logFailure(_ context: String, slot: Int? = nil, error: Error) {
+        if let slot = slot {
+            os_log(
+                "%{public}@ failed for slot %{public}d: %{public}@",
+                log: Self.log,
+                type: .error,
+                context,
+                slot,
+                error.localizedDescription
+            )
+        } else {
+            os_log(
+                "%{public}@ failed: %{public}@",
+                log: Self.log,
+                type: .error,
+                context,
+                error.localizedDescription
+            )
+        }
+    }
+
     /// Run batch load operation on background thread
     func runLoadAll(
         slots: [Slot],
         changerService: ChangerServicing,
         mountService: MountServicing,
         onUpdate: @escaping () -> Void,
-        onSlotLoaded: @escaping (Int, String, String) -> Void,
+        onSlotLoaded: @escaping (Int, String, String?) -> Void,
         onSlotEjected: @escaping (Int) -> Void,
         onComplete: @escaping () -> Void
     ) {
@@ -143,12 +193,20 @@ final class BatchOperationState: ObservableObject {
                         onUpdate()
                     }
 
-                    // Wait for disc and mount
+                    // Wait for disc and mount (if it has a filesystem)
                     let bsdName = try mountService.waitForDisc(timeout: 60)
-                    let mountPoint = try mountService.mountDisc(bsdName: bsdName)
+                    let mountPoint = try mountDiscIfAvailable(
+                        bsdName: bsdName,
+                        mountService: mountService,
+                        allowMountless: false
+                    )
 
                     DispatchQueue.main.async {
-                        self.statusText = "Mounted at \(mountPoint)"
+                        if let mountPoint = mountPoint {
+                            self.statusText = "Mounted at \(mountPoint)"
+                        } else {
+                            self.statusText = "Disc ready (no filesystem mount)"
+                        }
                         onSlotLoaded(slot.id, bsdName, mountPoint)
                         onUpdate()
                     }
@@ -174,6 +232,7 @@ final class BatchOperationState: ObservableObject {
                     }
 
                 } catch {
+                    self.logFailure("batch load", slot: slot.id, error: error)
                     DispatchQueue.main.async {
                         self.failedSlots.append((slot.id, error.localizedDescription))
                         onUpdate()
@@ -206,7 +265,7 @@ final class BatchOperationState: ObservableObject {
         imagingService: ImagingServicing,
         catalogService: CatalogService,
         onUpdate: @escaping () -> Void,
-        onSlotLoaded: @escaping (Int, String, String) -> Void,
+        onSlotLoaded: @escaping (Int, String, String?) -> Void,
         onSlotEjected: @escaping (Int) -> Void,
         onComplete: @escaping () -> Void
     ) {
@@ -242,13 +301,16 @@ final class BatchOperationState: ObservableObject {
             do {
                 let driveStatus = try? changerService.getDriveStatus()
                 if driveStatus?.hasDisc == true, let sourceSlot = driveStatus?.sourceSlot {
-                    try mountService.unmountDisc(bsdName: mountService.findDiscBSDName() ?? "", force: true)
+                    if let bsdName = mountService.findDiscBSDName(), mountService.isMounted(bsdName: bsdName) {
+                        try? mountService.unmountDisc(bsdName: bsdName, force: true)
+                    }
                     try changerService.ejectToSlot(sourceSlot)
                     DispatchQueue.main.async {
                         onSlotEjected(sourceSlot)
                     }
                 }
             } catch {
+                self.logFailure("initial eject before image-all", error: error)
                 // Best effort - continue even if eject fails
             }
 
@@ -280,12 +342,21 @@ final class BatchOperationState: ObservableObject {
                         onUpdate()
                     }
 
-                    // Wait for disc and mount
+                    // Wait for disc, detect media type, then mount.
                     let bsdName = try mountService.waitForDisc(timeout: 60)
-                    let mountPoint = try mountService.mountDisc(bsdName: bsdName)
+                    let discType = imagingService.detectDiscType(bsdName: bsdName)
+                    let mountPoint = try mountDiscIfAvailable(
+                        bsdName: bsdName,
+                        mountService: mountService,
+                        allowMountless: (discType == .audioCDDA)
+                    )
 
                     DispatchQueue.main.async {
-                        self.statusText = "Mounted, detecting disc type..."
+                        if mountPoint != nil {
+                            self.statusText = "Mounted, detecting disc type..."
+                        } else {
+                            self.statusText = "Disc ready, detecting disc type..."
+                        }
                         onSlotLoaded(slot.id, bsdName, mountPoint)
                         onUpdate()
                     }
@@ -298,9 +369,6 @@ final class BatchOperationState: ObservableObject {
                     if let estimatedSize = estimatedSize {
                         knownDiscSizes.append(estimatedSize)
                     }
-
-                    // Detect disc type
-                    let discType = imagingService.detectDiscType(bsdName: bsdName)
 
                     // Record disc in catalog
                     _ = catalogService.recordDisc(
@@ -322,7 +390,7 @@ final class BatchOperationState: ObservableObject {
 
                     // Unmount before imaging (hdiutil needs raw access)
                     if mountService.isMounted(bsdName: bsdName) {
-                        try mountService.unmountDisc(bsdName: bsdName)
+                        try mountService.unmountDisc(bsdName: bsdName, force: true)
                     }
 
                     // Create image
@@ -407,6 +475,7 @@ final class BatchOperationState: ObservableObject {
                     }
 
                 } catch {
+                    self.logFailure("batch image", slot: slot.id, error: error)
                     let imagingCancelled: Bool = {
                         guard let imagingError = error as? ImagingError else { return false }
                         if case .cancelled = imagingError {
@@ -449,11 +518,15 @@ final class BatchOperationState: ObservableObject {
 
                     // Try to eject disc if loaded
                     do {
+                        if let bsdName = mountService.findDiscBSDName(), mountService.isMounted(bsdName: bsdName) {
+                            try? mountService.unmountDisc(bsdName: bsdName, force: true)
+                        }
                         try changerService.ejectToSlot(slot.id)
                         DispatchQueue.main.async {
                             onSlotEjected(slot.id)
                         }
                     } catch {
+                        self.logFailure("batch image cleanup eject", slot: slot.id, error: error)
                         // Ignore eject errors
                     }
                 }
