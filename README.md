@@ -110,9 +110,11 @@ This repo includes a GitHub Actions release workflow at `.github/workflows/relea
 - Output:
   - `Discbot-<tag>-macOS.zip`
   - `Discbot-<tag>-macOS.zip.sha256`
+  - `Discbot-<tag>-macOS.dmg`
+  - `Discbot-<tag>-macOS.dmg.sha256`
 - Publishing:
   - Artifacts are uploaded to the workflow run
-  - A GitHub Release is automatically created for tag pushes and attaches both files
+  - A GitHub Release is automatically created for tag pushes and attaches all artifacts
 
 ### Signing and notarization (optional but recommended)
 
@@ -125,7 +127,8 @@ If these GitHub repository secrets are present, release artifacts are Developer 
 - `APPLE_APP_SPECIFIC_PASSWORD` — App-specific password for that Apple ID
 - `APPLE_TEAM_ID` — Apple Developer Team ID
 
-If signing secrets are not configured, the workflow still publishes an unsigned artifact.
+If signing secrets are not configured, the workflow still publishes unsigned artifacts.
+If signing secrets are configured but notarization secrets are not, artifacts are signed but not notarized.
 
 Example:
 

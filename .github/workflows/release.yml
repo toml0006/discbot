@@ -22,6 +22,18 @@ jobs:
         with:
           submodules: true
 
+      - name: Compute artifact names
+        id: names
+        run: |
+          VERSION="${GITHUB_REF_NAME:-manual}"
+          VERSION="${VERSION//\//-}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "artifact_name=Discbot-${VERSION}-macOS" >> "$GITHUB_OUTPUT"
+          echo "zip_name=Discbot-${VERSION}-macOS.zip" >> "$GITHUB_OUTPUT"
+          echo "zip_sha_name=Discbot-${VERSION}-macOS.zip.sha256" >> "$GITHUB_OUTPUT"
+          echo "dmg_name=Discbot-${VERSION}-macOS.dmg" >> "$GITHUB_OUTPUT"
+          echo "dmg_sha_name=Discbot-${VERSION}-macOS.dmg.sha256" >> "$GITHUB_OUTPUT"
+
       - name: Build Release app
         run: |
           xcodebuild -project discbot.xcodeproj \
@@ -72,7 +84,7 @@ jobs:
             has_notary=false
             echo "Signing secrets not configured; producing unsigned release artifact."
           elif [ "$has_notary" != "true" ]; then
-            echo "Notarization secrets not configured; producing signed but unnotarized artifact."
+            echo "Notarization secrets not configured; producing signed but unnotarized artifacts."
           fi
 
           echo "has_signing=$has_signing" >> "$GITHUB_OUTPUT"
@@ -104,46 +116,94 @@ jobs:
           codesign --force --deep --options runtime --timestamp --sign "$APPLE_SIGNING_IDENTITY" "$APP_PATH"
           codesign --verify --deep --strict --verbose=2 "$APP_PATH"
 
-      - name: Package app
-        id: package
-        run: |
-          VERSION="${GITHUB_REF_NAME:-manual}"
-          VERSION="${VERSION//\//-}"
-          ZIP_NAME="Discbot-${VERSION}-macOS.zip"
-          SHA_NAME="${ZIP_NAME}.sha256"
-
-          if [ ! -d "$APP_PATH" ]; then
-            echo "Expected app not found at $APP_PATH"
-            exit 1
-          fi
-
-          ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" "$ZIP_NAME"
-          shasum -a 256 "$ZIP_NAME" > "$SHA_NAME"
-
-          echo "artifact_name=Discbot-${VERSION}-macOS" >> "$GITHUB_OUTPUT"
-          echo "zip_name=$ZIP_NAME" >> "$GITHUB_OUTPUT"
-          echo "sha_name=$SHA_NAME" >> "$GITHUB_OUTPUT"
-
-      - name: Notarize and staple
+      - name: Notarize and staple app
         if: steps.mode.outputs.has_notary == 'true'
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          ZIP_NAME: ${{ steps.package.outputs.zip_name }}
-          SHA_NAME: ${{ steps.package.outputs.sha_name }}
         run: |
-          xcrun notarytool submit "$ZIP_NAME" \
+          APP_NOTARY_ZIP="$RUNNER_TEMP/Discbot-notary.zip"
+          ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" "$APP_NOTARY_ZIP"
+
+          xcrun notarytool submit "$APP_NOTARY_ZIP" \
             --apple-id "$APPLE_ID" \
             --password "$APPLE_APP_SPECIFIC_PASSWORD" \
             --team-id "$APPLE_TEAM_ID" \
             --wait
 
           xcrun stapler staple "$APP_PATH"
+          xcrun stapler validate "$APP_PATH"
 
-          # Repackage so the stapled ticket is included in the distributed zip.
+      - name: Build DMG
+        run: |
+          DMG_NAME="${{ steps.names.outputs.dmg_name }}"
+          STAGE_DIR="$RUNNER_TEMP/dmg-stage"
+          rm -rf "$STAGE_DIR"
+          mkdir -p "$STAGE_DIR"
+          cp -R "$APP_PATH" "$STAGE_DIR/Discbot.app"
+
+          hdiutil create \
+            -volname "Discbot ${{ steps.names.outputs.version }}" \
+            -srcfolder "$STAGE_DIR" \
+            -format UDZO \
+            -ov \
+            "$DMG_NAME"
+
+      - name: Sign DMG
+        if: steps.mode.outputs.has_signing == 'true'
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: |
+          DMG_NAME="${{ steps.names.outputs.dmg_name }}"
+          codesign --force --sign "$APPLE_SIGNING_IDENTITY" --timestamp "$DMG_NAME"
+          codesign --verify --verbose=2 "$DMG_NAME"
+
+      - name: Notarize and staple DMG
+        if: steps.mode.outputs.has_notary == 'true'
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          DMG_NAME="${{ steps.names.outputs.dmg_name }}"
+
+          xcrun notarytool submit "$DMG_NAME" \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
+            --wait
+
+          xcrun stapler staple "$DMG_NAME"
+          xcrun stapler validate "$DMG_NAME"
+
+      - name: Package final artifacts
+        id: package
+        run: |
+          ZIP_NAME="${{ steps.names.outputs.zip_name }}"
+          ZIP_SHA_NAME="${{ steps.names.outputs.zip_sha_name }}"
+          DMG_NAME="${{ steps.names.outputs.dmg_name }}"
+          DMG_SHA_NAME="${{ steps.names.outputs.dmg_sha_name }}"
+
+          if [ ! -d "$APP_PATH" ]; then
+            echo "Expected app not found at $APP_PATH"
+            exit 1
+          fi
+
+          if [ ! -f "$DMG_NAME" ]; then
+            echo "Expected DMG not found at $DMG_NAME"
+            exit 1
+          fi
+
           ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" "$ZIP_NAME"
-          shasum -a 256 "$ZIP_NAME" > "$SHA_NAME"
+          shasum -a 256 "$ZIP_NAME" > "$ZIP_SHA_NAME"
+          shasum -a 256 "$DMG_NAME" > "$DMG_SHA_NAME"
+
+          echo "artifact_name=${{ steps.names.outputs.artifact_name }}" >> "$GITHUB_OUTPUT"
+          echo "zip_name=$ZIP_NAME" >> "$GITHUB_OUTPUT"
+          echo "zip_sha_name=$ZIP_SHA_NAME" >> "$GITHUB_OUTPUT"
+          echo "dmg_name=$DMG_NAME" >> "$GITHUB_OUTPUT"
+          echo "dmg_sha_name=$DMG_SHA_NAME" >> "$GITHUB_OUTPUT"
 
       - name: Upload release artifacts
         uses: actions/upload-artifact@v4
@@ -151,7 +211,9 @@ jobs:
           name: ${{ steps.package.outputs.artifact_name }}
           path: |
             ${{ steps.package.outputs.zip_name }}
-            ${{ steps.package.outputs.sha_name }}
+            ${{ steps.package.outputs.zip_sha_name }}
+            ${{ steps.package.outputs.dmg_name }}
+            ${{ steps.package.outputs.dmg_sha_name }}
           if-no-files-found: error
 
       - name: Create GitHub Release
@@ -160,5 +222,7 @@ jobs:
         with:
           files: |
             ${{ steps.package.outputs.zip_name }}
-            ${{ steps.package.outputs.sha_name }}
+            ${{ steps.package.outputs.zip_sha_name }}
+            ${{ steps.package.outputs.dmg_name }}
+            ${{ steps.package.outputs.dmg_sha_name }}
           generate_release_notes: true
