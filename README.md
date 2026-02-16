@@ -99,6 +99,41 @@ xcodebuild -project discbot.xcodeproj \
 
 Or open `discbot.xcodeproj` in Xcode and build.
 
+## GitHub Release Builds
+
+This repo includes a GitHub Actions release workflow at `.github/workflows/release.yml`.
+
+- Trigger: push a tag matching `v*` (example: `v1.0.0`)
+- Compatibility checks:
+  - Binary must include both `x86_64` and `arm64`
+  - `LSMinimumSystemVersion` must be `10.15` (Catalina)
+- Output:
+  - `Discbot-<tag>-macOS.zip`
+  - `Discbot-<tag>-macOS.zip.sha256`
+- Publishing:
+  - Artifacts are uploaded to the workflow run
+  - A GitHub Release is automatically created for tag pushes and attaches both files
+
+### Signing and notarization (optional but recommended)
+
+If these GitHub repository secrets are present, release artifacts are Developer ID signed and notarized:
+
+- `APPLE_CERTIFICATE_BASE64` — Base64-encoded `.p12` certificate export
+- `APPLE_CERTIFICATE_PASSWORD` — Password for the `.p12`
+- `APPLE_SIGNING_IDENTITY` — Developer ID Application identity name (for `codesign`)
+- `APPLE_ID` — Apple ID used for notarization
+- `APPLE_APP_SPECIFIC_PASSWORD` — App-specific password for that Apple ID
+- `APPLE_TEAM_ID` — Apple Developer Team ID
+
+If signing secrets are not configured, the workflow still publishes an unsigned artifact.
+
+Example:
+
+```sh
+git tag v1.0.0
+git push origin v1.0.0
+```
+
 ## See also
 
 - [mchanger](https://github.com/toml0006/mchanger) — CLI tool and C library for controlling SCSI media changers

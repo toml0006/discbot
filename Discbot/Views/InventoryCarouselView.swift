@@ -90,22 +90,18 @@ struct InventoryCarouselView: View {
         .onReceive(viewModel.$driveStatus) { newStatus in
             controller.updateDriveDisc(driveStatus: newStatus)
         }
-        .onReceive(viewModel.$currentOperation) { operation in
-            guard let operation = operation else { return }
-            switch operation {
-            case .loadingSlot(let slotId):
-                controller.rotateToSlot(slotId)
-                controller.animateLoadDisc(slotId: slotId)
-            case .ejecting:
-                if case .ejecting(let toSlot) = viewModel.driveStatus {
-                    controller.rotateToSlot(toSlot)
-                    controller.animateEjectDisc(toSlot: toSlot)
-                }
-            case .unloading(let slotId):
-                controller.rotateToSlot(slotId)
-                controller.animateEjectFromChamber(slotId: slotId)
-            default:
-                break
+        .onReceive(viewModel.$carouselAnimationEvent.compactMap { $0 }) { event in
+            let rotationDuration: TimeInterval = 1.2
+            switch event.kind {
+            case .loadFromSlot(let slotId):
+                controller.rotateToSlot(slotId, duration: rotationDuration)
+                controller.animateLoadDisc(slotId: slotId, afterRotationDuration: rotationDuration)
+            case .ejectToSlot(let slotId):
+                controller.rotateToSlot(slotId, duration: rotationDuration)
+                controller.animateEjectDisc(toSlot: slotId, afterRotationDuration: rotationDuration)
+            case .ejectFromChamber(let slotId):
+                controller.rotateToSlot(slotId, duration: rotationDuration)
+                controller.animateEjectFromChamber(slotId: slotId, afterRotationDuration: rotationDuration)
             }
         }
         .background(Color(NSColor(white: 0.06, alpha: 1.0)))

@@ -18,13 +18,34 @@ jobs:
         run: |
           xcodebuild -project discbot.xcodeproj \
             -scheme Discbot \
-            -destination 'platform=macOS' \
+            -destination 'generic/platform=macOS' \
             -configuration Release \
+            -derivedDataPath build/DerivedData \
             build
+
+      - name: Verify Catalina compatibility
+        run: |
+          APP_PATH="build/DerivedData/Build/Products/Release/Discbot.app"
+          BIN_PATH="$APP_PATH/Contents/MacOS/Discbot"
+          INFO_PLIST="$APP_PATH/Contents/Info.plist"
+
+          if [ ! -f "$BIN_PATH" ]; then
+            echo "Missing app binary: $BIN_PATH"
+            exit 1
+          fi
+
+          ARCHS=$(lipo -archs "$BIN_PATH")
+          echo "Built architectures: $ARCHS"
+          echo "$ARCHS" | grep -qw "x86_64" || { echo "Missing x86_64 slice for Catalina"; exit 1; }
+          echo "$ARCHS" | grep -qw "arm64" || { echo "Missing arm64 slice"; exit 1; }
+
+          MIN_OS=$(/usr/libexec/PlistBuddy -c "Print :LSMinimumSystemVersion" "$INFO_PLIST")
+          echo "LSMinimumSystemVersion: $MIN_OS"
+          [ "$MIN_OS" = "10.15" ] || { echo "Expected LSMinimumSystemVersion=10.15"; exit 1; }
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
           name: Discbot
-          path: build/Release/Discbot.app
-          if-no-files-found: ignore
+          path: build/DerivedData/Build/Products/Release/Discbot.app
+          if-no-files-found: error

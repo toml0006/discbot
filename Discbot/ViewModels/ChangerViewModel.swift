@@ -93,6 +93,7 @@ final class ChangerViewModel: ObservableObject {
     @Published var batchState: BatchOperationState?
     @Published var pendingRipDirectory: URL?  // Set by RipConfigSheet, consumed by MainView
     private var pendingLoadSlotIdAfterEject: Int?
+    @Published var carouselAnimationEvent: CarouselAnimationEvent?
 
     // Unload all state
     @Published var unloadAllInProgress = false
@@ -128,6 +129,17 @@ final class ChangerViewModel: ObservableObject {
         case unloading(Int)
         case scanningSlot(Int)
         case waitingForDiscRemoval(Int)  // Waiting for user to remove disc from I/E
+    }
+
+    struct CarouselAnimationEvent: Equatable {
+        enum Kind: Equatable {
+            case loadFromSlot(Int)
+            case ejectToSlot(Int)
+            case ejectFromChamber(Int)
+        }
+
+        let id = UUID()
+        let kind: Kind
     }
 
     init(settings: AppSettings = AppSettings()) {
@@ -288,6 +300,12 @@ final class ChangerViewModel: ObservableObject {
             }
             self.pendingDriveReconcile = work
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: work)
+        }
+    }
+
+    private func publishCarouselAnimation(_ kind: CarouselAnimationEvent.Kind) {
+        DispatchQueue.main.async {
+            self.carouselAnimationEvent = CarouselAnimationEvent(kind: kind)
         }
     }
 
@@ -507,6 +525,7 @@ final class ChangerViewModel: ObservableObject {
 
             do {
                 try self.changerService.loadSlot(slotNumber)
+                self.publishCarouselAnimation(.loadFromSlot(slotNumber))
 
                 DispatchQueue.main.async {
                     // Update slot status
@@ -656,6 +675,7 @@ final class ChangerViewModel: ObservableObject {
                 }
 
                 try self.changerService.ejectToSlot(targetSlot)
+                self.publishCarouselAnimation(.ejectToSlot(targetSlot))
 
                 DispatchQueue.main.async {
                     // Update state
@@ -807,6 +827,7 @@ final class ChangerViewModel: ObservableObject {
             do {
                 // 1. Load disc into drive
                 try self.changerService.loadSlot(slotNumber)
+                self.publishCarouselAnimation(.loadFromSlot(slotNumber))
 
                 DispatchQueue.main.async {
                     self.slots[slotNumber - 1].isFull = false
@@ -879,6 +900,7 @@ final class ChangerViewModel: ObservableObject {
 
                 // 7. Move disc back to slot
                 try self.changerService.ejectToSlot(slotNumber)
+                self.publishCarouselAnimation(.ejectToSlot(slotNumber))
 
                 DispatchQueue.main.async {
                     self.slots[slotNumber - 1].isInDrive = false
@@ -927,6 +949,7 @@ final class ChangerViewModel: ObservableObject {
 
             do {
                 try self.changerService.unloadToIE(slotNumber)
+                self.publishCarouselAnimation(.ejectFromChamber(slotNumber))
 
                 DispatchQueue.main.async {
                     self.slots[slotNumber - 1].isFull = false
@@ -1105,6 +1128,7 @@ final class ChangerViewModel: ObservableObject {
 
             do {
                 try self.changerService.unloadToIE(nextSlot)
+                self.publishCarouselAnimation(.ejectFromChamber(nextSlot))
 
                 DispatchQueue.main.async {
                     self.slots[nextSlot - 1].isFull = false

@@ -157,6 +157,7 @@ class CarouselSceneController {
         for (_, node) in slotNodes { node.removeFromParentNode() }
         slotNodes.removeAll()
         discNodes.removeAll()
+        animatingSlotIds.removeAll()
 
         for slot in slots {
             let slotIndex = slot.id - 1
@@ -336,42 +337,59 @@ class CarouselSceneController {
 
     // MARK: - Disc Transfer Animations
 
-    /// Load disc from slot — rolls inward into the center drive
-    func animateLoadDisc(slotId: Int) {
+    /// Compute the world position of a disc sitting in its slot after the carousel has rotated
+    /// to align that slot with the +X axis (facing the drive).
+    private func slotWorldPosition(slotId: Int) -> SCNVector3 {
+        // After rotateToSlot, the slot faces +X. Its world position is (carouselRadius, 0, 0)
+        // and the disc center is at local Y = discRadius within the group.
+        return SCNVector3(Float(carouselRadius), Float(discRadius), 0)
+    }
+
+    /// The world position at the drive slot entrance (+X face of the drive).
+    private var driveSlotEntrance: SCNVector3 {
+        SCNVector3(Float(driveWidth / 2) + 0.05, Float(driveHeight / 2), 0)
+    }
+
+    /// Reparent a node to the scene root, preserving its current world transform.
+    private func reparentToRoot(_ node: SCNNode) {
+        let worldTransform = node.presentation.worldTransform
+        node.removeFromParentNode()
+        node.transform = worldTransform
+        scene.rootNode.addChildNode(node)
+    }
+
+    /// Load disc from slot — carousel rotates to align, then disc slides into drive
+    func animateLoadDisc(slotId: Int, afterRotationDuration: TimeInterval = 1.2) {
         guard let discNode = discNodes[slotId] else { return }
         animatingSlotIds.insert(slotId)
 
-        // Phase 1: Tip disc to roll on edge (rotate Y by π/2)
-        let tip = SCNAction.rotateBy(x: 0, y: CGFloat.pi / 2, z: 0, duration: 0.3)
-        tip.timingMode = .easeInEaseOut
+        let driveTarget = driveSlotEntrance
 
-        // Phase 2: Roll toward drive center
-        let travel = carouselRadius
-        let rollDistance = travel
-        // Number of rotations = distance / circumference = distance / (2πr)
-        let circumference = 2.0 * CGFloat.pi * discRadius
-        let rotations = rollDistance / circumference
-        let rollAngle = rotations * 2.0 * CGFloat.pi
+        // Wait for carousel rotation to finish, then reparent and animate in world space
+        let waitForRotation = SCNAction.wait(duration: afterRotationDuration + 0.1)
 
-        let slide = SCNAction.moveBy(x: -travel, y: 0.1, z: 0, duration: 1.0)
-        slide.timingMode = .easeInEaseOut
-        let roll = SCNAction.rotateBy(x: rollAngle, y: 0, z: 0, duration: 1.0)
-        let shrink = SCNAction.scale(to: 0.45, duration: 1.0)
-        shrink.timingMode = .easeInEaseOut
-        let rollPhase = SCNAction.group([slide, roll, shrink])
+        let reparent = SCNAction.run { [weak self] node in
+            guard let self = self else { return }
+            self.reparentToRoot(node)
+            // Snap to the expected world position (in case presentation differs slightly)
+            node.position = self.slotWorldPosition(slotId: slotId)
+            // Reset rotation to just the disc's standing orientation
+            node.eulerAngles = SCNVector3(0, 0, Float.pi / 2)
+            node.scale = SCNVector3(1, 1, 1)
+        }
 
-        // Phase 3: Tip back and enter drive slot
-        let tipBack = SCNAction.rotateBy(x: 0, y: -CGFloat.pi / 2, z: 0, duration: 0.3)
-        tipBack.timingMode = .easeInEaseOut
+        // Slide horizontally from carousel edge to drive entrance
+        let slideDuration: TimeInterval = 1.2
+        let slideIn = SCNAction.move(to: SCNVector3(driveTarget.x, driveTarget.y, driveTarget.z), duration: slideDuration)
+        slideIn.timingMode = .easeInEaseOut
 
-        let fadeOut = SCNAction.fadeOut(duration: 0.15)
+        let fadeOut = SCNAction.fadeOut(duration: 0.2)
         let remove = SCNAction.removeFromParentNode()
 
         let sequence = SCNAction.sequence([
-            SCNAction.wait(duration: 1.2),
-            tip,
-            rollPhase,
-            tipBack,
+            waitForRotation,
+            reparent,
+            slideIn,
             fadeOut,
             remove
         ])
@@ -385,72 +403,79 @@ class CarouselSceneController {
         }
     }
 
-    /// Eject disc from drive — rolls outward back into a slot
-    func animateEjectDisc(toSlot slotId: Int) {
+    /// Eject disc from drive — disc slides outward from drive to the target slot
+    func animateEjectDisc(toSlot slotId: Int, afterRotationDuration: TimeInterval = 1.2) {
         animatingSlotIds.insert(slotId)
+
+        // Fade out existing drive disc
         driveDiscNode?.runAction(SCNAction.sequence([
-            SCNAction.fadeOut(duration: 0.3),
+            SCNAction.fadeOut(duration: 0.2),
             SCNAction.removeFromParentNode()
         ]))
         driveDiscNode = nil
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
-            guard let self = self, let groupNode = self.slotNodes[slotId] else { return }
+        let driveStart = driveSlotEntrance
 
+        // Wait for carousel rotation to align, then animate
+        DispatchQueue.main.asyncAfter(deadline: .now() + afterRotationDuration + 0.15) { [weak self] in
+            guard let self = self else { return }
+            guard let groupNode = self.slotNodes[slotId] else {
+                self.animatingSlotIds.remove(slotId)
+                return
+            }
+
+            // Create disc at drive entrance in world space (scene root)
             let discNode = self.makeDiscNode(discType: .unscanned)
             discNode.name = "disc_\(slotId)"
-            let startX = Float(-self.carouselRadius)
-            discNode.position = SCNVector3(startX, Float(self.discRadius) + 0.1, 0)
+            discNode.position = driveStart
+            discNode.eulerAngles = SCNVector3(0, 0, Float.pi / 2)
             discNode.opacity = 0
-            discNode.scale = SCNVector3(0.45, 0.45, 0.45)
-            groupNode.addChildNode(discNode)
+            self.scene.rootNode.addChildNode(discNode)
+
+            let slotTarget = self.slotWorldPosition(slotId: slotId)
 
             let fadeIn = SCNAction.fadeIn(duration: 0.15)
 
-            // Tip to roll
-            let tip = SCNAction.rotateBy(x: 0, y: CGFloat.pi / 2, z: 0, duration: 0.25)
-            tip.timingMode = .easeInEaseOut
+            // Slide from drive to slot position
+            let slideOut = SCNAction.move(to: slotTarget, duration: 1.2)
+            slideOut.timingMode = .easeInEaseOut
 
-            // Roll outward
-            let travel = self.carouselRadius
-            let circumference = 2.0 * CGFloat.pi * self.discRadius
-            let rotations = travel / circumference
-            let rollAngle = -(rotations * 2.0 * CGFloat.pi)
+            // Reparent back into the slot group at the correct local position
+            let reparentToSlot = SCNAction.run { node in
+                node.removeFromParentNode()
+                node.position = SCNVector3(0, Float(self.discRadius), 0)
+                node.eulerAngles = SCNVector3(0, 0, Float.pi / 2)
+                node.scale = SCNVector3(1, 1, 1)
+                node.opacity = 1
+                groupNode.addChildNode(node)
+            }
 
-            let slide = SCNAction.moveBy(x: travel, y: -0.1, z: 0, duration: 1.0)
-            slide.timingMode = .easeInEaseOut
-            let roll = SCNAction.rotateBy(x: rollAngle, y: 0, z: 0, duration: 1.0)
-            let grow = SCNAction.scale(to: 1.0, duration: 1.0)
-            grow.timingMode = .easeInEaseOut
-            let rollPhase = SCNAction.group([slide, roll, grow])
-
-            // Tip back into slot orientation
-            let tipBack = SCNAction.rotateBy(x: 0, y: -CGFloat.pi / 2, z: 0, duration: 0.25)
-            tipBack.timingMode = .easeInEaseOut
-
-            discNode.runAction(SCNAction.sequence([fadeIn, tip, rollPhase, tipBack])) { [weak self] in
+            discNode.runAction(SCNAction.sequence([fadeIn, slideOut, reparentToSlot])) { [weak self] in
                 self?.animatingSlotIds.remove(slotId)
             }
             self.discNodes[slotId] = discNode
         }
     }
 
-    /// Eject disc from chamber — rolls outward past the ring and vanishes in smoke
-    func animateEjectFromChamber(slotId: Int) {
+    /// Eject disc from changer — slides out from slot past the ring, vanishes in smoke
+    func animateEjectFromChamber(slotId: Int, afterRotationDuration: TimeInterval = 1.2) {
         guard let discNode = discNodes[slotId] else { return }
         animatingSlotIds.insert(slotId)
 
-        // Tip to roll on edge
-        let tip = SCNAction.rotateBy(x: 0, y: CGFloat.pi / 2, z: 0, duration: 0.25)
-        tip.timingMode = .easeInEaseOut
+        let waitForRotation = SCNAction.wait(duration: afterRotationDuration + 0.1)
 
-        // Roll outward past the ring
-        let rollOut = SCNAction.moveBy(x: 5.0, y: 0.5, z: 0, duration: 1.2)
-        rollOut.timingMode = .easeIn
-        let circumference = 2.0 * CGFloat.pi * discRadius
-        let rotations = 5.0 / circumference
-        let spin = SCNAction.rotateBy(x: -(rotations * 2.0 * CGFloat.pi), y: 0, z: 0, duration: 1.2)
-        let rollPhase = SCNAction.group([rollOut, spin])
+        let reparent = SCNAction.run { [weak self] node in
+            guard let self = self else { return }
+            self.reparentToRoot(node)
+            node.position = self.slotWorldPosition(slotId: slotId)
+            node.eulerAngles = SCNVector3(0, 0, Float.pi / 2)
+            node.scale = SCNVector3(1, 1, 1)
+        }
+
+        // Slide outward past the ring (+X direction, away from center)
+        let ejectTarget = SCNVector3(Float(carouselRadius) + 4.0, Float(discRadius) + 0.5, 0)
+        let slideOut = SCNAction.move(to: ejectTarget, duration: 1.2)
+        slideOut.timingMode = .easeIn
 
         let puff = SCNAction.run { [weak self] node in
             self?.addSmokePuff(at: node.presentation.worldPosition)
@@ -459,9 +484,9 @@ class CarouselSceneController {
         let remove = SCNAction.removeFromParentNode()
 
         let sequence = SCNAction.sequence([
-            SCNAction.wait(duration: 1.2),
-            tip,
-            rollPhase,
+            waitForRotation,
+            reparent,
+            slideOut,
             puff,
             fadeOut,
             remove

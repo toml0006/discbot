@@ -1,0 +1,164 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  APP_PATH: build/DerivedData/Build/Products/Release/Discbot.app
+  BIN_PATH: build/DerivedData/Build/Products/Release/Discbot.app/Contents/MacOS/Discbot
+
+jobs:
+  build-and-release:
+    runs-on: macos-15  # Sequoia - last version with FireWire support
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Build Release app
+        run: |
+          xcodebuild -project discbot.xcodeproj \
+            -scheme Discbot \
+            -destination 'generic/platform=macOS' \
+            -configuration Release \
+            -derivedDataPath build/DerivedData \
+            CODE_SIGNING_ALLOWED=NO \
+            build
+
+      - name: Verify Catalina compatibility
+        run: |
+          if [ ! -f "$BIN_PATH" ]; then
+            echo "Missing app binary: $BIN_PATH"
+            exit 1
+          fi
+
+          ARCHS=$(lipo -archs "$BIN_PATH")
+          echo "Built architectures: $ARCHS"
+          echo "$ARCHS" | grep -qw "x86_64" || { echo "Missing x86_64 slice for Catalina"; exit 1; }
+          echo "$ARCHS" | grep -qw "arm64" || { echo "Missing arm64 slice"; exit 1; }
+
+          MIN_OS=$(/usr/libexec/PlistBuddy -c "Print :LSMinimumSystemVersion" "$APP_PATH/Contents/Info.plist")
+          echo "LSMinimumSystemVersion: $MIN_OS"
+          [ "$MIN_OS" = "10.15" ] || { echo "Expected LSMinimumSystemVersion=10.15"; exit 1; }
+
+      - name: Determine signing/notarization mode
+        id: mode
+        env:
+          APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          has_signing=true
+          for v in APPLE_CERTIFICATE_BASE64 APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY; do
+            if [ -z "${!v}" ]; then has_signing=false; fi
+          done
+
+          has_notary=true
+          for v in APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID; do
+            if [ -z "${!v}" ]; then has_notary=false; fi
+          done
+
+          if [ "$has_signing" != "true" ]; then
+            has_notary=false
+            echo "Signing secrets not configured; producing unsigned release artifact."
+          elif [ "$has_notary" != "true" ]; then
+            echo "Notarization secrets not configured; producing signed but unnotarized artifact."
+          fi
+
+          echo "has_signing=$has_signing" >> "$GITHUB_OUTPUT"
+          echo "has_notary=$has_notary" >> "$GITHUB_OUTPUT"
+
+      - name: Prepare signing keychain
+        if: steps.mode.outputs.has_signing == 'true'
+        env:
+          APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          CERT_PATH="$RUNNER_TEMP/discbot-signing.p12"
+          KEYCHAIN_PATH="$RUNNER_TEMP/discbot-signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(uuidgen)"
+
+          echo "$APPLE_CERTIFICATE_BASE64" | base64 --decode > "$CERT_PATH"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERT_PATH" -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH"
+
+      - name: Sign app bundle
+        if: steps.mode.outputs.has_signing == 'true'
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: |
+          codesign --force --deep --options runtime --timestamp --sign "$APPLE_SIGNING_IDENTITY" "$APP_PATH"
+          codesign --verify --deep --strict --verbose=2 "$APP_PATH"
+
+      - name: Package app
+        id: package
+        run: |
+          VERSION="${GITHUB_REF_NAME:-manual}"
+          VERSION="${VERSION//\//-}"
+          ZIP_NAME="Discbot-${VERSION}-macOS.zip"
+          SHA_NAME="${ZIP_NAME}.sha256"
+
+          if [ ! -d "$APP_PATH" ]; then
+            echo "Expected app not found at $APP_PATH"
+            exit 1
+          fi
+
+          ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" "$ZIP_NAME"
+          shasum -a 256 "$ZIP_NAME" > "$SHA_NAME"
+
+          echo "artifact_name=Discbot-${VERSION}-macOS" >> "$GITHUB_OUTPUT"
+          echo "zip_name=$ZIP_NAME" >> "$GITHUB_OUTPUT"
+          echo "sha_name=$SHA_NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Notarize and staple
+        if: steps.mode.outputs.has_notary == 'true'
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          ZIP_NAME: ${{ steps.package.outputs.zip_name }}
+          SHA_NAME: ${{ steps.package.outputs.sha_name }}
+        run: |
+          xcrun notarytool submit "$ZIP_NAME" \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
+            --wait
+
+          xcrun stapler staple "$APP_PATH"
+
+          # Repackage so the stapled ticket is included in the distributed zip.
+          ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" "$ZIP_NAME"
+          shasum -a 256 "$ZIP_NAME" > "$SHA_NAME"
+
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.package.outputs.artifact_name }}
+          path: |
+            ${{ steps.package.outputs.zip_name }}
+            ${{ steps.package.outputs.sha_name }}
+          if-no-files-found: error
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ${{ steps.package.outputs.zip_name }}
+            ${{ steps.package.outputs.sha_name }}
+          generate_release_notes: true
