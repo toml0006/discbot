@@ -142,6 +142,7 @@ jobs:
           rm -rf "$STAGE_DIR"
           mkdir -p "$STAGE_DIR"
           cp -R "$APP_PATH" "$STAGE_DIR/Discbot.app"
+          ln -s /Applications "$STAGE_DIR/Applications"
 
           hdiutil create \
             -volname "Discbot ${{ steps.names.outputs.version }}" \
