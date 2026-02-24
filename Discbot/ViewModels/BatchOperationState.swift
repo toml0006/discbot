@@ -13,6 +13,7 @@ final class BatchOperationState: ObservableObject {
     enum OperationType: Equatable {
         case loadAll
         case imageAll(outputDirectory: URL)
+        case scanUnknown
     }
 
     @Published var operationType: OperationType?
@@ -37,6 +38,7 @@ final class BatchOperationState: ObservableObject {
     @Published var overallTransferredBytes: Int64 = 0
     @Published var overallEstimatedTotalBytes: Int64?
     @Published var overallETASeconds: TimeInterval?
+    @Published var averageDiscOperationSeconds: TimeInterval?
 
     private let imagingControl = ImagingService.ImagingControl()
     private static let log = OSLog(
@@ -94,6 +96,7 @@ final class BatchOperationState: ObservableObject {
         overallTransferredBytes = 0
         overallEstimatedTotalBytes = nil
         overallETASeconds = nil
+        averageDiscOperationSeconds = nil
         imagingControl.reset()
     }
 
@@ -211,9 +214,6 @@ final class BatchOperationState: ObservableObject {
                         onUpdate()
                     }
 
-                    // Brief pause to let user see the mounted disc
-                    Thread.sleep(forTimeInterval: 2.0)
-
                     DispatchQueue.main.async {
                         self.statusText = "Ejecting slot \(slot.id)..."
                         onUpdate()
@@ -260,6 +260,7 @@ final class BatchOperationState: ObservableObject {
     func runImageAll(
         slots: [Slot],
         outputDirectory: URL,
+        driveFallbackSourceSlot: Int?,
         changerService: ChangerServicing,
         mountService: MountServicing,
         imagingService: ImagingServicing,
@@ -289,6 +290,7 @@ final class BatchOperationState: ObservableObject {
             self?.overallTransferredBytes = 0
             self?.overallEstimatedTotalBytes = nil
             self?.overallETASeconds = nil
+            self?.averageDiscOperationSeconds = nil
             self?.imagingControl.reset()
         }
 
@@ -300,7 +302,24 @@ final class BatchOperationState: ObservableObject {
             // Eject any disc currently in the drive before starting
             do {
                 let driveStatus = try? changerService.getDriveStatus()
-                if driveStatus?.hasDisc == true, let sourceSlot = driveStatus?.sourceSlot {
+                if driveStatus?.hasDisc == true {
+                    let sourceSlot = driveStatus?.sourceSlot ?? driveFallbackSourceSlot
+                    guard let sourceSlot else {
+                        DispatchQueue.main.async {
+                            self.isCancelled = true
+                            self.statusText = "Drive contains a disc with unknown source slot. Eject it first, then retry."
+                            self.failedSlots.append((0, "Drive not empty (source slot unknown)"))
+                            onUpdate()
+                        }
+                        DispatchQueue.main.async {
+                            self.isRunning = false
+                            self.isPaused = false
+                            onUpdate()
+                            onComplete()
+                        }
+                        return
+                    }
+
                     if let bsdName = mountService.findDiscBSDName(), mountService.isMounted(bsdName: bsdName) {
                         try? mountService.unmountDisc(bsdName: bsdName, force: true)
                     }
@@ -547,6 +566,219 @@ final class BatchOperationState: ObservableObject {
                 self.isPaused = false
                 if !self.isCancelled {
                     self.statusText = "Complete: \(self.completedSlots.count) imaged, \(self.failedSlots.count) failed"
+                }
+                onUpdate()
+                onComplete()
+            }
+        }
+    }
+
+    /// Scan unknown discs: load, mount, catalog metadata, unmount/eject, repeat.
+    func runScanUnknown(
+        slots: [Slot],
+        driveFallbackSourceSlot: Int?,
+        changerService: ChangerServicing,
+        mountService: MountServicing,
+        imagingService: ImagingServicing,
+        catalogService: CatalogService,
+        onUpdate: @escaping () -> Void,
+        onSlotLoaded: @escaping (Int, String, String?) -> Void,
+        onSlotCataloged: @escaping (Int) -> Void,
+        onSlotEjected: @escaping (Int) -> Void,
+        onComplete: @escaping () -> Void
+    ) {
+        let unknownSlots = slots.filter { $0.isFull && !$0.isInDrive && $0.discType == .unscanned }
+        guard !unknownSlots.isEmpty else { return }
+
+        DispatchQueue.main.async { [weak self] in
+            self?.operationType = .scanUnknown
+            self?.isRunning = true
+            self?.isCancelled = false
+            self?.isPaused = false
+            self?.totalCount = unknownSlots.count
+            self?.currentIndex = 0
+            self?.completedSlots = []
+            self?.failedSlots = []
+            self?.imagingProgress = 0
+            self?.currentDiscTransferredBytes = 0
+            self?.currentDiscTotalBytes = nil
+            self?.currentDiscSpeedBytesPerSecond = 0
+            self?.currentDiscETASeconds = nil
+            self?.overallTransferredBytes = 0
+            self?.overallEstimatedTotalBytes = nil
+            self?.overallETASeconds = nil
+            self?.averageDiscOperationSeconds = nil
+            self?.statusText = "Preparing scan..."
+            onUpdate()
+        }
+
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self = self else { return }
+            var completedDurations: [TimeInterval] = []
+
+            func updateScanTiming(currentDiscElapsed: TimeInterval?) {
+                let average = completedDurations.isEmpty
+                    ? nil
+                    : completedDurations.reduce(0, +) / Double(completedDurations.count)
+                let remainingAfterCurrent = max(self.totalCount - self.currentIndex - 1, 0)
+                let eta: TimeInterval? = {
+                    guard let average = average else { return nil }
+                    let currentRemaining = max(average - (currentDiscElapsed ?? 0), 0)
+                    return currentRemaining + (average * Double(remainingAfterCurrent))
+                }()
+                DispatchQueue.main.async {
+                    self.averageDiscOperationSeconds = average
+                    self.overallETASeconds = eta
+                    onUpdate()
+                }
+            }
+
+            // Eject any disc currently in the drive before starting.
+            do {
+                let driveStatus = try? changerService.getDriveStatus()
+                if driveStatus?.hasDisc == true {
+                    let sourceSlot = driveStatus?.sourceSlot ?? driveFallbackSourceSlot
+                    guard let sourceSlot else {
+                        DispatchQueue.main.async {
+                            self.isCancelled = true
+                            self.statusText = "Drive contains a disc with unknown source slot. Eject it first, then retry."
+                            self.failedSlots.append((0, "Drive not empty (source slot unknown)"))
+                            onUpdate()
+                            self.isRunning = false
+                            onUpdate()
+                            onComplete()
+                        }
+                        return
+                    }
+                    if let bsdName = mountService.findDiscBSDName(), mountService.isMounted(bsdName: bsdName) {
+                        try? mountService.unmountDisc(bsdName: bsdName, force: true)
+                    }
+                    try changerService.ejectToSlot(sourceSlot)
+                    DispatchQueue.main.async {
+                        onSlotEjected(sourceSlot)
+                    }
+                }
+            } catch {
+                self.logFailure("initial eject before scan-unknown", error: error)
+            }
+
+            for slot in unknownSlots {
+                if self.isCancelled {
+                    DispatchQueue.main.async {
+                        self.statusText = "Cancelled after \(self.currentIndex) disc(s)"
+                        onUpdate()
+                    }
+                    break
+                }
+
+                let discStartedAt = Date()
+                updateScanTiming(currentDiscElapsed: 0)
+
+                DispatchQueue.main.async {
+                    self.currentSlot = slot.id
+                    self.statusText = "Loading slot \(slot.id)..."
+                    onUpdate()
+                }
+
+                do {
+                    try changerService.loadSlot(slot.id)
+
+                    DispatchQueue.main.async {
+                        self.statusText = "Waiting for slot \(slot.id)..."
+                        onUpdate()
+                    }
+                    updateScanTiming(currentDiscElapsed: Date().timeIntervalSince(discStartedAt))
+
+                    let bsdName = try mountService.waitForDisc(timeout: 90)
+                    let discType = imagingService.detectDiscType(bsdName: bsdName)
+                    let mountPoint = try self.mountDiscIfAvailable(
+                        bsdName: bsdName,
+                        mountService: mountService,
+                        allowMountless: (discType == .audioCDDA)
+                    )
+
+                    DispatchQueue.main.async {
+                        if mountPoint != nil {
+                            self.statusText = "Cataloging slot \(slot.id)..."
+                        } else {
+                            self.statusText = "Cataloging slot \(slot.id) (no filesystem mount)..."
+                        }
+                        onSlotLoaded(slot.id, bsdName, mountPoint)
+                        onUpdate()
+                    }
+                    updateScanTiming(currentDiscElapsed: Date().timeIntervalSince(discStartedAt))
+
+                    let estimatedSize = imagingService.estimateDiscSizeBytes(bsdName: bsdName)
+                    _ = catalogService.recordDisc(
+                        slotId: slot.id,
+                        bsdName: bsdName,
+                        discType: discType,
+                        sizeBytes: estimatedSize
+                    )
+
+                    DispatchQueue.main.async {
+                        onSlotCataloged(slot.id)
+                        onUpdate()
+                    }
+
+                    if mountService.isMounted(bsdName: bsdName) {
+                        DispatchQueue.main.async {
+                            self.statusText = "Unmounting slot \(slot.id)..."
+                            onUpdate()
+                        }
+                        updateScanTiming(currentDiscElapsed: Date().timeIntervalSince(discStartedAt))
+                        try mountService.unmountDisc(bsdName: bsdName, force: true)
+                    }
+
+                    DispatchQueue.main.async {
+                        self.statusText = "Returning slot \(slot.id)..."
+                        onUpdate()
+                    }
+                    updateScanTiming(currentDiscElapsed: Date().timeIntervalSince(discStartedAt))
+                    try changerService.ejectToSlot(slot.id)
+
+                    DispatchQueue.main.async {
+                        self.completedSlots.append(slot.id)
+                        onSlotEjected(slot.id)
+                        onUpdate()
+                    }
+
+                } catch {
+                    self.logFailure("scan unknown", slot: slot.id, error: error)
+                    DispatchQueue.main.async {
+                        self.failedSlots.append((slot.id, error.localizedDescription))
+                        onUpdate()
+                    }
+
+                    // Best-effort cleanup for the current slot before continuing.
+                    do {
+                        if let bsdName = mountService.findDiscBSDName(), mountService.isMounted(bsdName: bsdName) {
+                            try? mountService.unmountDisc(bsdName: bsdName, force: true)
+                        }
+                        try changerService.ejectToSlot(slot.id)
+                        DispatchQueue.main.async {
+                            onSlotEjected(slot.id)
+                            onUpdate()
+                        }
+                    } catch {
+                        self.logFailure("scan unknown cleanup eject", slot: slot.id, error: error)
+                    }
+                }
+
+                completedDurations.append(Date().timeIntervalSince(discStartedAt))
+                updateScanTiming(currentDiscElapsed: nil)
+
+                DispatchQueue.main.async {
+                    self.currentIndex += 1
+                    onUpdate()
+                }
+            }
+
+            DispatchQueue.main.async {
+                self.isRunning = false
+                if !self.isCancelled {
+                    self.statusText = "Complete: \(self.completedSlots.count) cataloged, \(self.failedSlots.count) failed"
+                    self.overallETASeconds = 0
                 }
                 onUpdate()
                 onComplete()

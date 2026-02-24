@@ -85,7 +85,7 @@ struct DriveStatusView: View {
             }
             .buttonStyle(SegmentedActionStyle(isEnabled: viewModel.currentOperation == nil))
             .disabled(viewModel.currentOperation != nil)
-            .helpTooltip("Full SCSI scan of all slots (⌘⇧R)")
+            .helpTooltip("Catalog unknown discs by loading one at a time (⌘⇧R)")
 
             changerMoreMenu
         }

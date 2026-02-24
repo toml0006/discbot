@@ -151,6 +151,9 @@ final class ChangerViewModel: ObservableObject {
 
     // Coalesce multiple DiskArbitration events into one reconcile pass.
     private var pendingDriveReconcile: DispatchWorkItem?
+    private let catalogCacheQueue = DispatchQueue(label: "discbot.catalogCache", qos: .userInitiated)
+    private var cachedDiscsBySlot: [Int: DiscRecord] = [:]
+    private var cachedBackupStatusesBySlot: [Int: BackupStatus] = [:]
 
     enum Operation: Equatable {
         case connecting
@@ -242,8 +245,8 @@ final class ChangerViewModel: ObservableObject {
                     NotificationCenter.default.post(name: NSNotification.Name("DeviceInfoChanged"), object: nil)
                 }
 
-                // Load initial inventory
-                self.doRefreshInventory()
+                // Load initial inventory and hydrate catalog cache once.
+                self.doRefreshInventory(includeCatalogHydration: true)
 
                 DispatchQueue.main.async {
                     self.currentOperation = nil
@@ -272,6 +275,10 @@ final class ChangerViewModel: ObservableObject {
             self?.slots = []
             self?.driveStatus = .empty
             self?.currentBSDName = nil
+            self?.catalogCacheQueue.sync {
+                self?.cachedDiscsBySlot = [:]
+                self?.cachedBackupStatusesBySlot = [:]
+            }
         }
     }
 
@@ -305,6 +312,10 @@ final class ChangerViewModel: ObservableObject {
         unloadAllTotal = 0
         currentOperation = nil
         operationStatusText = ""
+        catalogCacheQueue.sync {
+            cachedDiscsBySlot = [:]
+            cachedBackupStatusesBySlot = [:]
+        }
 
         if enabled {
             let state = MockChangerState()
@@ -387,6 +398,7 @@ final class ChangerViewModel: ObservableObject {
     func refreshInventory() {
         guard isConnected else { return }
         guard currentOperation == nil else { return }
+        guard batchState?.isRunning != true else { return }
 
         DispatchQueue.main.async { [weak self] in
             self?.currentOperation = .refreshing
@@ -402,7 +414,7 @@ final class ChangerViewModel: ObservableObject {
     }
 
     /// Internal refresh - must be called from background thread
-    private func doRefreshInventory() {
+    private func doRefreshInventory(includeCatalogHydration: Bool = false) {
         do {
             let inventory = try self.changerService.getInventoryStatus()
             var newSlots = inventory.slots
@@ -412,10 +424,11 @@ final class ChangerViewModel: ObservableObject {
             let discPresent = self.mountService.isDiscPresent()
             let bsdName = self.mountService.findDiscBSDName()
 
-            // Load backup statuses and disc info from catalog
-            let backupStatuses = self.catalogService.getAllBackupStatuses()
-            let allDiscs = self.catalogService.getAllDiscs()
-            let discsBySlot = Dictionary(allDiscs.map { ($0.slotId, $0) }, uniquingKeysWith: { _, last in last })
+            if includeCatalogHydration {
+                hydrateCatalogCache()
+            }
+
+            let (discsBySlot, backupStatuses) = catalogCacheSnapshot()
             for i in 0..<newSlots.count {
                 let slotId = newSlots[i].id
                 if let status = backupStatuses[slotId] {
@@ -478,47 +491,130 @@ final class ChangerViewModel: ObservableObject {
         }
     }
 
-    func scanInventory() {
-        guard isConnected else { return }
-        guard currentOperation == nil else { return }
+    private func hydrateCatalogCache() {
+        let allDiscs = catalogService.getAllDiscs()
+        let allStatuses = catalogService.getAllBackupStatuses()
+        let discsBySlot = Dictionary(allDiscs.map { ($0.slotId, $0) }, uniquingKeysWith: { _, last in last })
+        catalogCacheQueue.sync {
+            self.cachedDiscsBySlot = discsBySlot
+            self.cachedBackupStatusesBySlot = allStatuses
+        }
+    }
 
-        DispatchQueue.main.async { [weak self] in
-            self?.currentOperation = .scanning
-            self?.operationStatusText = "Scanning all slots (this may take several minutes)..."
+    private func catalogCacheSnapshot() -> ([Int: DiscRecord], [Int: BackupStatus]) {
+        catalogCacheQueue.sync {
+            (self.cachedDiscsBySlot, self.cachedBackupStatusesBySlot)
+        }
+    }
+
+    private func refreshCatalogCache(forSlotIds slotIds: [Int], applyToVisibleSlots: Bool = true) {
+        let uniqueSlotIds = Array(Set(slotIds)).sorted()
+        guard !uniqueSlotIds.isEmpty else { return }
+
+        var discBySlot: [Int: DiscRecord] = [:]
+        var statusBySlot: [Int: BackupStatus] = [:]
+        for slotId in uniqueSlotIds {
+            if let disc = catalogService.getDisc(slotId: slotId) {
+                discBySlot[slotId] = disc
+            }
+            statusBySlot[slotId] = catalogService.getBackupStatus(slotId: slotId)
         }
 
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            guard let self = self else { return }
-
-            do {
-                try self.changerService.initializeElementStatus()
-
-                // Wait a bit for the changer to settle
-                Thread.sleep(forTimeInterval: 5.0)
-
-                DispatchQueue.main.async {
-                    self.operationStatusText = "Reading element status..."
+        catalogCacheQueue.sync {
+            for slotId in uniqueSlotIds {
+                if let disc = discBySlot[slotId] {
+                    self.cachedDiscsBySlot[slotId] = disc
+                } else {
+                    self.cachedDiscsBySlot.removeValue(forKey: slotId)
                 }
-
-                // Refresh inventory directly (don't use refreshInventory() which has guards)
-                self.doRefreshInventory()
-
-                DispatchQueue.main.async {
-                    self.currentOperation = nil
-                }
-
-            } catch let error as ChangerError {
-                DispatchQueue.main.async {
-                    self.connectionError = error
-                    self.currentOperation = nil
-                }
-            } catch {
-                DispatchQueue.main.async {
-                    self.connectionError = .unknown(error.localizedDescription)
-                    self.currentOperation = nil
+                if let status = statusBySlot[slotId] {
+                    self.cachedBackupStatusesBySlot[slotId] = status
+                } else {
+                    self.cachedBackupStatusesBySlot.removeValue(forKey: slotId)
                 }
             }
         }
+
+        guard applyToVisibleSlots else { return }
+        DispatchQueue.main.async {
+            for slotId in uniqueSlotIds {
+                guard slotId > 0, slotId <= self.slots.count else { continue }
+                if let status = statusBySlot[slotId] {
+                    self.slots[slotId - 1].backupStatus = status
+                }
+                if let disc = discBySlot[slotId] {
+                    self.slots[slotId - 1].discType = SlotDiscType.from(catalogString: disc.discType)
+                    self.slots[slotId - 1].volumeLabel = disc.volumeLabel
+                }
+            }
+        }
+    }
+
+    func scanInventory() {
+        guard isConnected else { return }
+        guard currentOperation == nil else { return }
+        guard batchState?.isRunning != true else { return }
+
+        let unknownSlots = slots.filter { $0.isFull && !$0.isInDrive && $0.discType == .unscanned }
+        guard !unknownSlots.isEmpty else {
+            operationStatusText = "No unknown discs to scan"
+            return
+        }
+
+        let state = BatchOperationState()
+        DispatchQueue.main.async { [weak self] in
+            self?.batchState = state
+        }
+
+        let fallbackSourceSlot = slots.first(where: { $0.isInDrive })?.id
+        let scannedSlotIds = unknownSlots.map(\.id)
+
+        state.runScanUnknown(
+            slots: unknownSlots,
+            driveFallbackSourceSlot: fallbackSourceSlot,
+            changerService: changerService,
+            mountService: mountService,
+            imagingService: imagingService,
+            catalogService: catalogService,
+            onUpdate: { [weak self] in
+                DispatchQueue.main.async {
+                    self?.objectWillChange.send()
+                }
+            },
+            onSlotLoaded: { [weak self] slot, bsdName, mountPoint in
+                DispatchQueue.main.async {
+                    guard let self = self else { return }
+                    self.currentBSDName = bsdName
+                    self.driveStatus = .loaded(sourceSlot: slot, mountPoint: mountPoint)
+                    if slot > 0 && slot <= self.slots.count {
+                        self.slots[slot - 1].isFull = false
+                        self.slots[slot - 1].isInDrive = true
+                    }
+                }
+            },
+            onSlotCataloged: { [weak self] slot in
+                DispatchQueue.global(qos: .userInitiated).async {
+                    self?.refreshCatalogCache(forSlotIds: [slot])
+                }
+            },
+            onSlotEjected: { [weak self] slot in
+                DispatchQueue.main.async {
+                    guard let self = self else { return }
+                    if slot > 0 && slot <= self.slots.count {
+                        self.slots[slot - 1].isInDrive = false
+                        self.slots[slot - 1].isFull = true
+                    }
+                    self.driveStatus = .empty
+                    self.currentBSDName = nil
+                }
+            },
+            onComplete: { [weak self] in
+                DispatchQueue.global(qos: .userInitiated).async {
+                    self?.refreshCatalogCache(forSlotIds: scannedSlotIds)
+                }
+                self?.refreshInventory()
+            }
+        )
     }
 
     // MARK: - Single Slot Operations
@@ -699,8 +795,6 @@ final class ChangerViewModel: ObservableObject {
                             self.operationStatusText = "Unmounting disc..."
                         }
                         try self.mountService.unmountDisc(bsdName: bsd)
-                        // Give the system time to finish unmount
-                        Thread.sleep(forTimeInterval: 1.0)
                     }
 
                     // Eject the optical drive tray using drutil (real hardware only).
@@ -714,8 +808,6 @@ final class ChangerViewModel: ObservableObject {
                         process.arguments = ["eject"]
                         process.launch()
                         process.waitUntilExit()
-                        // Give the drive time to fully eject
-                        Thread.sleep(forTimeInterval: 3.0)
                     }
                 }
 
@@ -911,13 +1003,7 @@ final class ChangerViewModel: ObservableObject {
                     sizeBytes: estimatedSize
                 )
 
-                // Update slot with catalog info
-                if let disc = self.catalogService.getDisc(slotId: slotNumber) {
-                    DispatchQueue.main.async {
-                        self.slots[slotNumber - 1].discType = SlotDiscType.from(catalogString: disc.discType)
-                        self.slots[slotNumber - 1].volumeLabel = disc.volumeLabel
-                    }
-                }
+                self.refreshCatalogCache(forSlotIds: [slotNumber])
 
                 DispatchQueue.main.async {
                     self.operationStatusText = "Unmounting disc..."
@@ -926,7 +1012,6 @@ final class ChangerViewModel: ObservableObject {
                 // 5. Unmount
                 if self.mountService.isMounted(bsdName: bsdName) {
                     try self.mountService.unmountDisc(bsdName: bsdName)
-                    Thread.sleep(forTimeInterval: 1.0)
                 }
 
                 // 6. Eject from drive tray (real hardware only)
@@ -939,7 +1024,6 @@ final class ChangerViewModel: ObservableObject {
                     process.arguments = ["eject"]
                     process.launch()
                     process.waitUntilExit()
-                    Thread.sleep(forTimeInterval: 3.0)
                 }
 
                 DispatchQueue.main.async {
@@ -1301,6 +1385,23 @@ final class ChangerViewModel: ObservableObject {
         slots.filter { $0.isFull || $0.isInDrive }
     }
 
+    /// Selected slots that have already been successfully imaged.
+    var previouslyImagedSelectedSlots: [Slot] {
+        slots
+            .filter { selectedSlotsForRip.contains($0.id) }
+            .filter {
+                if case .backedUp = $0.backupStatus {
+                    return true
+                }
+                return false
+            }
+            .sorted { $0.id < $1.id }
+    }
+
+    var previouslyImagedSelectedCount: Int {
+        previouslyImagedSelectedSlots.count
+    }
+
     /// Anchor slot for shift-click range selection
     var ripSelectionAnchor: Int?
 
@@ -1349,6 +1450,7 @@ final class ChangerViewModel: ObservableObject {
 
         let slotsToRip = slots.filter { selectedSlotsForRip.contains($0.id) && ($0.isFull || $0.isInDrive) }
         guard !slotsToRip.isEmpty else { return }
+        let slotIdsToRip = slotsToRip.map(\.id)
 
         let state = BatchOperationState()
         DispatchQueue.main.async { [weak self] in
@@ -1358,6 +1460,7 @@ final class ChangerViewModel: ObservableObject {
         state.runImageAll(
             slots: slotsToRip,
             outputDirectory: outputDirectory,
+            driveFallbackSourceSlot: slots.first(where: { $0.isInDrive })?.id,
             changerService: changerService,
             mountService: mountService,
             imagingService: imagingService,
@@ -1384,20 +1487,20 @@ final class ChangerViewModel: ObservableObject {
                     if slot > 0 && slot <= self.slots.count {
                         self.slots[slot - 1].isFull = true
                         self.slots[slot - 1].isInDrive = false
-                        // Refresh disc info from catalog after rip
-                        if let disc = self.catalogService.getDisc(slotId: slot) {
-                            self.slots[slot - 1].discType = SlotDiscType.from(catalogString: disc.discType)
-                            self.slots[slot - 1].volumeLabel = disc.volumeLabel
-                            self.slots[slot - 1].backupStatus = self.catalogService.getBackupStatus(slotId: slot)
-                        }
                     }
                     self.driveStatus = .empty
                     self.currentBSDName = nil
+                }
+                DispatchQueue.global(qos: .userInitiated).async {
+                    self?.refreshCatalogCache(forSlotIds: [slot])
                 }
             },
             onComplete: { [weak self] in
                 DispatchQueue.main.async {
                     self?.selectedSlotsForRip.removeAll()
+                }
+                DispatchQueue.global(qos: .userInitiated).async {
+                    self?.refreshCatalogCache(forSlotIds: slotIdsToRip)
                 }
                 self?.refreshInventory()
             }

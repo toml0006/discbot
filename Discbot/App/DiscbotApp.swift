@@ -261,7 +261,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         fileMenuItem.submenu = fileMenu
         fileMenu.addItem(withTitle: "Refresh Inventory", action: #selector(refreshInventory), keyEquivalent: "r")
 
-        let scanItem = NSMenuItem(title: "Scan All Slots", action: #selector(scanAllSlots), keyEquivalent: "r")
+        let scanItem = NSMenuItem(title: "Catalog Unknown Discs", action: #selector(scanAllSlots), keyEquivalent: "r")
         scanItem.keyEquivalentModifierMask = [.command, .shift]
         fileMenu.addItem(scanItem)
 

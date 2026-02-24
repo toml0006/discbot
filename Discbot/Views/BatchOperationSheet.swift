@@ -29,6 +29,8 @@ struct BatchOperationSheet: View {
 
                     if case .imageAll = batchState.operationType {
                         imagingStatsSection
+                    } else if case .scanUnknown = batchState.operationType {
+                        scanStatsSection
                     }
 
                     // Current metadata (if available)
@@ -158,6 +160,28 @@ struct BatchOperationSheet: View {
                 Text("Queue: \(formatBytes(batchState.overallTransferredBytes)) / \(formatBytes(batchState.overallEstimatedTotalBytes))")
                 Spacer()
                 Text("Queue ETA: \(formatDuration(batchState.overallETASeconds))")
+            }
+            .font(.caption)
+            .foregroundColor(.secondary)
+        }
+    }
+
+    private var scanStatsSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Catalog Scan Timing")
+                    .font(.subheadline)
+                    .fontWeight(.medium)
+                Spacer()
+                Text("ETA: \(formatDuration(batchState.overallETASeconds))")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+
+            HStack {
+                Text("Average per disc: \(formatDuration(batchState.averageDiscOperationSeconds))")
+                Spacer()
+                Text("Remaining discs: \(max(batchState.totalCount - batchState.currentIndex, 0))")
             }
             .font(.caption)
             .foregroundColor(.secondary)
@@ -311,6 +335,8 @@ struct BatchOperationSheet: View {
             return "Load All Discs"
         case .imageAll:
             return "Image All Discs"
+        case .scanUnknown:
+            return "Scan Unknown Discs"
         case nil:
             return "Batch Operation"
         }
@@ -322,6 +348,8 @@ struct BatchOperationSheet: View {
             return "square.stack.3d.up"
         case .imageAll:
             return "doc.badge.gearshape"
+        case .scanUnknown:
+            return "magnifyingglass"
         case nil:
             return "gearshape.2"
         }

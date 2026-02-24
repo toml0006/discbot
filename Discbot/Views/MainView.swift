@@ -188,6 +188,16 @@ struct MainView: View {
                     .foregroundColor(.orange)
             }
 
+            if viewModel.previouslyImagedSelectedCount > 0 {
+                HStack(spacing: 4) {
+                    SFSymbol(name: "exclamationmark.circle.fill", size: 11)
+                        .foregroundColor(.yellow)
+                    Text("\(viewModel.previouslyImagedSelectedCount) already imaged")
+                        .font(.system(.caption, design: .rounded))
+                        .foregroundColor(.yellow)
+                }
+            }
+
             Button("Clear") {
                 viewModel.clearSlotSelectionForRip()
             }
@@ -361,6 +371,10 @@ struct MainView: View {
     }
 
     private func pickFolderAndStartImaging() {
+        if !confirmReimagingIfNeeded() {
+            return
+        }
+
         let panel = NSOpenPanel()
         panel.title = "Choose Output Folder"
         panel.canChooseFiles = false
@@ -372,6 +386,31 @@ struct MainView: View {
 
         showingBatchSheet = true
         viewModel.startBatchImaging(outputDirectory: url)
+    }
+
+    private func confirmReimagingIfNeeded() -> Bool {
+        let previouslyImaged = viewModel.previouslyImagedSelectedSlots
+        guard !previouslyImaged.isEmpty else { return true }
+
+        let alert = NSAlert()
+        alert.messageText = "\(previouslyImaged.count) selected disc(s) were already imaged"
+
+        let slotSummary = previouslyImaged
+            .prefix(8)
+            .map { slot in
+                if let label = slot.volumeLabel, !label.isEmpty {
+                    return "Slot \(slot.id): \(label)"
+                }
+                return "Slot \(slot.id)"
+            }
+            .joined(separator: "\n")
+        let remaining = previouslyImaged.count - min(previouslyImaged.count, 8)
+        let suffix = remaining > 0 ? "\n…and \(remaining) more" : ""
+        alert.informativeText = "This queue includes discs with successful rip history.\n\n\(slotSummary)\(suffix)\n\nContinue anyway?"
+
+        alert.addButton(withTitle: "Continue")
+        alert.addButton(withTitle: "Cancel")
+        return alert.runModal() == .alertFirstButtonReturn
     }
 }
 
