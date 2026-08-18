@@ -14,6 +14,10 @@ import Combine
 final class AppSettings: ObservableObject {
     private enum Keys {
         static let mockChangerEnabled = "mockChangerEnabled"
+        static let remoteServerEnabled = "remoteServerEnabled"
+        static let remoteServerPort = "remoteServerPort"
+        static let remoteAccessToken = "remoteAccessToken"
+        static let remoteDestinations = "remoteDestinations"
     }
 
     @Published var mockChangerEnabled: Bool {
@@ -22,8 +26,73 @@ final class AppSettings: ObservableObject {
         }
     }
 
+    @Published var remoteServerEnabled: Bool {
+        didSet {
+            UserDefaults.standard.set(remoteServerEnabled, forKey: Keys.remoteServerEnabled)
+            notifyRemoteConfigurationChanged()
+        }
+    }
+
+    @Published var remoteServerPort: Int {
+        didSet {
+            let clamped = min(max(remoteServerPort, 1024), 65535)
+            if clamped != remoteServerPort {
+                remoteServerPort = clamped
+                return
+            }
+            UserDefaults.standard.set(remoteServerPort, forKey: Keys.remoteServerPort)
+            notifyRemoteConfigurationChanged()
+        }
+    }
+
+    @Published var remoteAccessToken: String {
+        didSet {
+            UserDefaults.standard.set(remoteAccessToken, forKey: Keys.remoteAccessToken)
+            notifyRemoteConfigurationChanged()
+        }
+    }
+
+    @Published var remoteDestinations: [RemoteRipDestination] {
+        didSet {
+            if let data = try? JSONEncoder().encode(remoteDestinations) {
+                UserDefaults.standard.set(data, forKey: Keys.remoteDestinations)
+            }
+            notifyRemoteConfigurationChanged()
+        }
+    }
+
+    @Published var remoteServerStatus = "Server stopped"
+
     init() {
         self.mockChangerEnabled = UserDefaults.standard.bool(forKey: Keys.mockChangerEnabled)
+        self.remoteServerEnabled = UserDefaults.standard.bool(forKey: Keys.remoteServerEnabled)
+        let savedPort = UserDefaults.standard.integer(forKey: Keys.remoteServerPort)
+        self.remoteServerPort = savedPort == 0 ? 8787 : min(max(savedPort, 1024), 65535)
+        let savedToken = UserDefaults.standard.string(forKey: Keys.remoteAccessToken) ?? ""
+        if savedToken.isEmpty {
+            self.remoteAccessToken = Self.generateAccessToken()
+        } else {
+            self.remoteAccessToken = savedToken
+        }
+        if let data = UserDefaults.standard.data(forKey: Keys.remoteDestinations),
+           let decoded = try? JSONDecoder().decode([RemoteRipDestination].self, from: data) {
+            self.remoteDestinations = decoded
+        } else {
+            self.remoteDestinations = []
+        }
+        UserDefaults.standard.set(remoteAccessToken, forKey: Keys.remoteAccessToken)
+    }
+
+    func rotateRemoteAccessToken() {
+        remoteAccessToken = Self.generateAccessToken()
+    }
+
+    private func notifyRemoteConfigurationChanged() {
+        NotificationCenter.default.post(name: .remoteServerConfigurationChanged, object: nil)
+    }
+
+    private static func generateAccessToken() -> String {
+        (UUID().uuidString + UUID().uuidString).replacingOccurrences(of: "-", with: "").lowercased()
     }
 }
 
@@ -32,7 +101,7 @@ private struct SettingsView: View {
     @EnvironmentObject private var viewModel: ChangerViewModel
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: 18) {
             Text("Changer")
                 .font(.headline)
 
@@ -53,10 +122,96 @@ private struct SettingsView: View {
                     .foregroundColor(.secondary)
             }
 
+            Divider()
+
+            Text("Remote Server")
+                .font(.headline)
+
+            Toggle(isOn: $settings.remoteServerEnabled) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Allow browser control on the local network")
+                    Text("Uses bearer-token authentication. Put a TLS reverse proxy or VPN in front of Discbot for access outside your trusted LAN.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+            }
+
+            HStack {
+                Text("Port")
+                TextField("Port", value: $settings.remoteServerPort, formatter: NumberFormatter())
+                    .frame(width: 90)
+                Stepper("", value: $settings.remoteServerPort, in: 1024...65535)
+                    .labelsHidden()
+                Text(settings.remoteServerStatus)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                Spacer()
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Access token").font(.subheadline).fontWeight(.medium)
+                HStack {
+                    Text(settings.remoteAccessToken)
+                        .font(.system(size: 10, design: .monospaced))
+                        .lineLimit(1)
+                    Spacer()
+                    Button("Copy") {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(settings.remoteAccessToken, forType: .string)
+                    }
+                    Button("Rotate") { settings.rotateRemoteAccessToken() }
+                }
+            }
+            .padding(10)
+            .background(RoundedRectangle(cornerRadius: 7).fill(Color.primary.opacity(0.05)))
+
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Text("Allowed rip destinations").font(.subheadline).fontWeight(.medium)
+                    Spacer()
+                    Button("Add Folder…", action: addDestination)
+                }
+                if settings.remoteDestinations.isEmpty {
+                    Text("Add a local folder or mounted SMB/NFS share before starting a remote rip.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                } else {
+                    ForEach(settings.remoteDestinations) { destination in
+                        HStack {
+                            SFSymbol(name: destination.isAvailable ? "externaldrive.fill" : "exclamationmark.triangle.fill", size: 13)
+                                .foregroundColor(destination.isAvailable ? .green : .orange)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(destination.name).fontWeight(.medium)
+                                Text(destination.path).font(.caption).foregroundColor(.secondary).lineLimit(1)
+                            }
+                            Spacer()
+                            Button("Remove") {
+                                settings.remoteDestinations.removeAll { $0.id == destination.id }
+                            }
+                        }
+                    }
+                }
+            }
+
             Spacer()
         }
         .padding(20)
-        .frame(width: 520, height: 200)
+        .frame(width: 620, height: 540)
+    }
+
+    private func addDestination() {
+        let panel = NSOpenPanel()
+        panel.title = "Allow Remote Rip Destination"
+        panel.message = "Choose a folder that remote clients may use. Mounted network shares are supported."
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.canCreateDirectories = true
+        panel.allowsMultipleSelection = false
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        let standardized = url.standardizedFileURL
+        guard !settings.remoteDestinations.contains(where: { $0.path == standardized.path }) else { return }
+        let name = standardized.lastPathComponent.isEmpty ? standardized.path : standardized.lastPathComponent
+        settings.remoteDestinations.append(RemoteRipDestination(name: name, path: standardized.path))
     }
 }
 
@@ -68,6 +223,8 @@ extension NSNotification.Name {
     static let menuZoomOut = NSNotification.Name("MenuZoomOut")
     static let menuSetSlotFilter = NSNotification.Name("MenuSetSlotFilter")
     static let menuImageSelected = NSNotification.Name("MenuImageSelected")
+    static let menuShowCatalog = NSNotification.Name("MenuShowCatalog")
+    static let remoteServerConfigurationChanged = NSNotification.Name("RemoteServerConfigurationChanged")
 }
 
 // App delegate - handles window creation for macOS 10.15+
@@ -79,28 +236,35 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     private var settingsWindow: NSWindow?
     private var deviceObserver: NSObjectProtocol?
     private var crashRecoveryObserver: AnyCancellable?
+    private var terminationDeadline: Date?
+    private var remoteServer: RemoteControlServer?
+    private var remoteServerObserver: NSObjectProtocol?
+    private var remoteControlAdapter: ChangerRemoteControlAdapter?
+    private var isHeadlessServer: Bool { CommandLine.arguments.contains("--server") }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Check for macOS Tahoe (macOS 26+) which removed FireWire support
-        if ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 26 {
+        if !isHeadlessServer && ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 26 {
             showTahoeWarning()
         }
 
-        let contentView = MainView()
-            .environmentObject(viewModel)
-            .environmentObject(settings)
+        if !isHeadlessServer {
+            let contentView = MainView()
+                .environmentObject(viewModel)
+                .environmentObject(settings)
 
-        window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 900, height: 600),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable],
-            backing: .buffered,
-            defer: false
-        )
-        window?.title = "Discbot"
-        window?.minSize = NSSize(width: 700, height: 500)
-        window?.contentView = NSHostingView(rootView: contentView)
-        window?.center()
-        window?.makeKeyAndOrderFront(nil)
+            window = NSWindow(
+                contentRect: NSRect(x: 0, y: 0, width: 900, height: 600),
+                styleMask: [.titled, .closable, .miniaturizable, .resizable],
+                backing: .buffered,
+                defer: false
+            )
+            window?.title = "Discbot"
+            window?.minSize = NSSize(width: 700, height: 500)
+            window?.contentView = NSHostingView(rootView: contentView)
+            window?.center()
+            window?.makeKeyAndOrderFront(nil)
+        }
 
         // Update window title when device info changes
         deviceObserver = NotificationCenter.default.addObserver(
@@ -111,12 +275,17 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             self?.updateWindowTitle()
         }
 
-        setupMenuBar()
+        if !isHeadlessServer { setupMenuBar() }
+
+        remoteServerObserver = NotificationCenter.default.addObserver(
+            forName: .remoteServerConfigurationChanged,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in self?.configureRemoteServer() }
+        configureRemoteServer()
 
         // Crash recovery: check if previous session left a disc in the drive
-        if let previousSlot = ChangerViewModel.checkDirtyFlag() {
-            ChangerViewModel.clearDirtyFlag()
-
+        if !isHeadlessServer, let previousSlot = ChangerViewModel.checkDirtyFlag() {
             crashRecoveryObserver = viewModel.$currentOperation
                 .dropFirst()
                 .filter { $0 == nil }
@@ -128,6 +297,47 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         }
     }
 
+    func applicationWillTerminate(_ notification: Notification) {
+        remoteServer?.stop()
+        if let observer = remoteServerObserver { NotificationCenter.default.removeObserver(observer) }
+    }
+
+    private func configureRemoteServer() {
+        let shouldRun = settings.remoteServerEnabled || isHeadlessServer
+        guard shouldRun else {
+            remoteServer?.stop()
+            remoteServer = nil
+            settings.remoteServerStatus = "Server stopped"
+            return
+        }
+
+        if remoteControlAdapter == nil {
+            remoteControlAdapter = ChangerRemoteControlAdapter(viewModel: viewModel)
+        }
+        guard let adapter = remoteControlAdapter else { return }
+        let controller = RemoteAPIController(
+            control: adapter,
+            token: { [weak self] in self?.settings.remoteAccessToken ?? "" },
+            destinations: { [weak self] in self?.settings.remoteDestinations ?? [] },
+            updateDestinations: { [weak self] values in
+                guard let self = self else { return }
+                let update = { self.settings.remoteDestinations = values }
+                Thread.isMainThread ? update() : DispatchQueue.main.sync(execute: update)
+            }
+        )
+        remoteServer?.stop()
+        let server = RemoteControlServer(controller: controller) { [weak self] status in
+            self?.settings.remoteServerStatus = status
+            if self?.isHeadlessServer == true { print("Discbot server: \(status)") }
+        }
+        remoteServer = server
+        do {
+            try server.start(port: UInt16(settings.remoteServerPort))
+        } catch {
+            settings.remoteServerStatus = "Server failed: \(error.localizedDescription)"
+        }
+    }
+
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         return true
     }
@@ -135,10 +345,16 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         let hasActiveOperation = viewModel.currentOperation != nil
         let hasBatchRunning = viewModel.batchState?.isRunning == true
-        let hasUnloadInProgress = viewModel.unloadAllInProgress
+        let hasCarouselOperation = viewModel.carouselBatchSnapshot?.running == true
+        let hasDiscLoaded = viewModel.driveStatus != .empty
 
-        guard hasActiveOperation || hasBatchRunning || hasUnloadInProgress else {
+        guard hasActiveOperation || hasBatchRunning || hasCarouselOperation || hasDiscLoaded else {
             return .terminateNow
+        }
+
+        if isHeadlessServer {
+            gracefulShutdown()
+            return .terminateLater
         }
 
         let alert = NSAlert()
@@ -158,42 +374,68 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     }
 
     private func gracefulShutdown() {
-        // Cancel any running operations
         viewModel.batchState?.cancel()
-        if viewModel.unloadAllInProgress {
+        if viewModel.carouselBatchSnapshot?.running == true {
             viewModel.cancelUnloadAll()
         }
+        terminationDeadline = Date().addingTimeInterval(180)
+        waitForOperationCleanup()
+    }
 
-        // Hard timeout: give up after 15 seconds
-        DispatchQueue.main.asyncAfter(deadline: .now() + 15.0) {
-            ChangerViewModel.clearDirtyFlag()
-            NSApplication.shared.reply(toApplicationShouldTerminate: true)
-        }
-
-        // Try to eject disc back to slot
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            guard let self = self else {
-                DispatchQueue.main.async {
-                    NSApplication.shared.reply(toApplicationShouldTerminate: true)
-                }
+    private func waitForOperationCleanup() {
+        guard let deadline = terminationDeadline else { return }
+        if viewModel.currentOperation != nil || viewModel.batchState?.isRunning == true {
+            guard Date() < deadline else {
+                finishTermination(success: false, reason: "The running operation did not finish its safe-return cleanup before the timeout.")
                 return
             }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+                self?.waitForOperationCleanup()
+            }
+            return
+        }
 
-            // Give hdiutil a moment to terminate after SIGTERM
-            Thread.sleep(forTimeInterval: 1.0)
-
-            let _ = self.viewModel.emergencyEjectSync()
-
-            ChangerViewModel.clearDirtyFlag()
-
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self = self else { return }
+            let success = self.viewModel.emergencyEjectSync()
             DispatchQueue.main.async {
-                NSApplication.shared.reply(toApplicationShouldTerminate: true)
+                self.finishTermination(
+                    success: success,
+                    reason: "Discbot could not verify that the disc was returned to its source slot. The recovery marker has been preserved."
+                )
             }
         }
     }
 
+    private func finishTermination(success: Bool, reason: String) {
+        terminationDeadline = nil
+        if success {
+            ChangerViewModel.clearDirtyFlag()
+            NSApplication.shared.reply(toApplicationShouldTerminate: true)
+            return
+        }
+
+        if isHeadlessServer {
+            FileHandle.standardError.write(Data("Discbot server refused to quit: \(reason)\n".utf8))
+            NSApplication.shared.reply(toApplicationShouldTerminate: false)
+            return
+        }
+
+        let alert = NSAlert()
+        alert.icon = appIcon
+        alert.messageText = "Could Not Quit Safely"
+        alert.informativeText = reason
+        alert.alertStyle = .critical
+        alert.addButton(withTitle: "Keep Discbot Open")
+        alert.runModal()
+        NSApplication.shared.reply(toApplicationShouldTerminate: false)
+    }
+
     private func showCrashRecoveryAlert(previousSlot: Int) {
-        guard viewModel.driveStatus != .empty else { return }
+        guard viewModel.driveStatus != .empty else {
+            ChangerViewModel.clearDirtyFlag()
+            return
+        }
 
         let alert = NSAlert()
         alert.icon = appIcon
@@ -205,6 +447,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
 
         if alert.runModal() == .alertFirstButtonReturn {
             viewModel.ejectDisc(toSlot: previousSlot)
+        } else {
+            // The user explicitly accepted leaving this media in the drive.
+            ChangerViewModel.clearDirtyFlag()
         }
     }
 
@@ -295,9 +540,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         changerMenu.addItem(withTitle: "Load All Discs", action: #selector(loadAllDiscs), keyEquivalent: "")
         changerMenu.addItem(withTitle: "Eject All", action: #selector(ejectAllToIE), keyEquivalent: "")
 
-        let imageItem = NSMenuItem(title: "Image Selected…", action: #selector(imageSelected), keyEquivalent: "i")
+        let imageItem = NSMenuItem(title: "Rip Selected…", action: #selector(imageSelected), keyEquivalent: "i")
         imageItem.keyEquivalentModifierMask = [.command, .option]
         changerMenu.addItem(imageItem)
+        changerMenu.addItem(NSMenuItem.separator())
+        let catalogItem = NSMenuItem(title: "Disc Library…", action: #selector(showCatalog), keyEquivalent: "y")
+        catalogItem.keyEquivalentModifierMask = [.command]
+        changerMenu.addItem(catalogItem)
 
         // View menu
         let viewMenuItem = NSMenuItem()
@@ -396,7 +645,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
                 .environmentObject(viewModel)
 
             let window = NSWindow(
-                contentRect: NSRect(x: 0, y: 0, width: 520, height: 200),
+                contentRect: NSRect(x: 0, y: 0, width: 620, height: 540),
                 styleMask: [.titled, .closable],
                 backing: .buffered,
                 defer: false
@@ -481,6 +730,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
 
     @objc func imageSelected() {
         NotificationCenter.default.post(name: .menuImageSelected, object: nil)
+    }
+
+    @objc func showCatalog() {
+        NotificationCenter.default.post(name: .menuShowCatalog, object: nil)
     }
 
     @objc func showGridView() {

@@ -2,7 +2,7 @@
 //  Database.swift
 //  Discbot
 //
-//  SQLite database wrapper for disc catalog persistence
+//  SQLite-backed permanent disc catalog and rip history
 //
 
 import Foundation
@@ -12,58 +12,56 @@ final class Database {
 
     private var db: OpaquePointer?
     private let queue = DispatchQueue(label: "discbot.database", qos: .userInitiated)
+    private let databaseURL: URL
+    private let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 
-    private init() {
+    init(databaseURL: URL? = nil) {
+        if let databaseURL = databaseURL {
+            self.databaseURL = databaseURL
+        } else {
+            let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+            self.databaseURL = appSupport
+                .appendingPathComponent("Discbot", isDirectory: true)
+                .appendingPathComponent("discbot.sqlite")
+        }
         openDatabase()
         createTables()
+        migrateLegacyCatalogIfNeeded()
+        markInterruptedRips()
     }
 
     deinit {
-        if let db = db {
-            sqlite3_close(db)
-        }
+        if let db = db { sqlite3_close(db) }
     }
 
-    // MARK: - Database Setup
+    // MARK: - Setup
 
     private func openDatabase() {
-        let fileManager = FileManager.default
-
-        // Get Application Support directory
-        guard let appSupport = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
-            print("Database: Failed to get Application Support directory")
+        let directory = databaseURL.deletingLastPathComponent()
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        } catch {
+            print("Database: Failed to create \(directory.path): \(error)")
             return
         }
 
-        let discbotDir = appSupport.appendingPathComponent("Discbot", isDirectory: true)
-
-        // Create directory if needed
-        if !fileManager.fileExists(atPath: discbotDir.path) {
-            do {
-                try fileManager.createDirectory(at: discbotDir, withIntermediateDirectories: true, attributes: nil)
-            } catch {
-                print("Database: Failed to create directory: \(error)")
-                return
-            }
-        }
-
-        let dbPath = discbotDir.appendingPathComponent("discbot.sqlite").path
-        print("Database: Opening at \(dbPath)")
-
-        if sqlite3_open(dbPath, &db) != SQLITE_OK {
-            print("Database: Failed to open database")
-            if let db = db {
-                print("Database: Error - \(String(cString: sqlite3_errmsg(db)))")
-            }
+        print("Database: Opening at \(databaseURL.path)")
+        guard sqlite3_open(databaseURL.path, &db) == SQLITE_OK else {
+            if let db = db { print("Database: \(String(cString: sqlite3_errmsg(db)))") }
             db = nil
+            return
         }
+        execute(sql: "PRAGMA foreign_keys = ON;")
+        execute(sql: "PRAGMA journal_mode = WAL;")
     }
 
     private func createTables() {
-        let createDiscsTable = """
-            CREATE TABLE IF NOT EXISTS discs (
+        execute(sql: """
+            CREATE TABLE IF NOT EXISTS catalog_discs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                slot_id INTEGER NOT NULL UNIQUE,
+                fingerprint TEXT NOT NULL UNIQUE,
+                fingerprint_kind TEXT NOT NULL,
+                fingerprint_confidence INTEGER NOT NULL DEFAULT 1,
                 volume_label TEXT,
                 disc_type TEXT,
                 size_bytes INTEGER,
@@ -76,294 +74,681 @@ final class Database {
                 metadata_source TEXT,
                 first_seen_at TEXT NOT NULL,
                 last_seen_at TEXT NOT NULL,
-                metadata_fetched_at TEXT
+                metadata_fetched_at TEXT,
+                metadata_provider_id TEXT,
+                metadata_overview TEXT,
+                artwork_url TEXT,
+                metadata_user_edited INTEGER NOT NULL DEFAULT 0,
+                metadata_tracks_json TEXT
             );
-            CREATE INDEX IF NOT EXISTS idx_discs_slot ON discs(slot_id);
-            """
+            CREATE INDEX IF NOT EXISTS idx_catalog_discs_last_seen ON catalog_discs(last_seen_at DESC);
 
-        let createBackupsTable = """
-            CREATE TABLE IF NOT EXISTS backups (
+            CREATE TABLE IF NOT EXISTS disc_sightings (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 disc_id INTEGER NOT NULL,
+                session_id TEXT NOT NULL,
+                slot_id INTEGER NOT NULL,
+                seen_at TEXT NOT NULL,
+                FOREIGN KEY (disc_id) REFERENCES catalog_discs(id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_sightings_disc ON disc_sightings(disc_id, seen_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_sightings_session_slot ON disc_sightings(session_id, slot_id, seen_at DESC);
+
+            CREATE TABLE IF NOT EXISTS rip_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                disc_id INTEGER NOT NULL,
+                slot_id INTEGER,
                 backup_path TEXT NOT NULL,
                 backup_size_bytes INTEGER,
                 backup_hash TEXT,
-                backup_date TEXT NOT NULL,
+                started_at TEXT NOT NULL,
+                completed_at TEXT,
                 backup_status TEXT NOT NULL,
                 error_message TEXT,
-                FOREIGN KEY (disc_id) REFERENCES discs(id)
+                FOREIGN KEY (disc_id) REFERENCES catalog_discs(id)
             );
-            CREATE INDEX IF NOT EXISTS idx_backups_disc ON backups(disc_id);
-            """
+            CREATE INDEX IF NOT EXISTS idx_rips_disc ON rip_history(disc_id, started_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_rips_status ON rip_history(backup_status, completed_at DESC);
 
-        execute(sql: createDiscsTable)
-        execute(sql: createBackupsTable)
+            CREATE TABLE IF NOT EXISTS rip_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                rip_id INTEGER,
+                disc_id INTEGER NOT NULL,
+                slot_id INTEGER,
+                event_type TEXT NOT NULL,
+                message TEXT NOT NULL,
+                event_at TEXT NOT NULL,
+                FOREIGN KEY (rip_id) REFERENCES rip_history(id),
+                FOREIGN KEY (disc_id) REFERENCES catalog_discs(id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_rip_events_time ON rip_events(event_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_rip_events_rip ON rip_events(rip_id, event_at);
+            """)
+        ensureMetadataColumns()
     }
 
-    // MARK: - Helpers
+    private func ensureMetadataColumns() {
+        let additions = [
+            ("metadata_provider_id", "TEXT"),
+            ("metadata_overview", "TEXT"),
+            ("artwork_url", "TEXT"),
+            ("metadata_user_edited", "INTEGER NOT NULL DEFAULT 0"),
+            ("metadata_tracks_json", "TEXT")
+        ]
+        for (name, declaration) in additions where !columnExists(table: "catalog_discs", column: name) {
+            execute(sql: "ALTER TABLE catalog_discs ADD COLUMN \(name) \(declaration);")
+        }
+    }
+
+    private func columnExists(table: String, column: String) -> Bool {
+        guard let db = db else { return false }
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "PRAGMA table_info(\(table))", -1, &stmt, nil) == SQLITE_OK else { return false }
+        defer { sqlite3_finalize(stmt) }
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            if string(stmt, 1) == column { return true }
+        }
+        return false
+    }
+
+    /// Preserve catalogs created by versions that treated a slot as a disc identity.
+    private func migrateLegacyCatalogIfNeeded() {
+        guard tableExists("discs") else { return }
+        execute(sql: """
+            INSERT OR IGNORE INTO catalog_discs (
+                id, fingerprint, fingerprint_kind, fingerprint_confidence,
+                volume_label, disc_type, size_bytes, musicbrainz_disc_id,
+                artist, album, year, genre, track_count, metadata_source,
+                first_seen_at, last_seen_at, metadata_fetched_at
+            )
+            SELECT
+                id, 'legacy-slot:' || slot_id, 'legacy-slot', 0,
+                volume_label, disc_type, size_bytes, musicbrainz_disc_id,
+                artist, album, year, genre, track_count, metadata_source,
+                first_seen_at, last_seen_at, metadata_fetched_at
+            FROM discs;
+
+            INSERT INTO disc_sightings (disc_id, session_id, slot_id, seen_at)
+            SELECT d.id, 'legacy', d.slot_id, d.last_seen_at
+            FROM discs d
+            WHERE NOT EXISTS (
+                SELECT 1 FROM disc_sightings s
+                WHERE s.disc_id = d.id AND s.session_id = 'legacy'
+            );
+            """)
+
+        guard tableExists("backups") else { return }
+        execute(sql: """
+            INSERT INTO rip_history (
+                id, disc_id, slot_id, backup_path, backup_size_bytes,
+                backup_hash, started_at, completed_at, backup_status, error_message
+            )
+            SELECT
+                b.id, b.disc_id, d.slot_id, b.backup_path, b.backup_size_bytes,
+                b.backup_hash, b.backup_date,
+                CASE WHEN b.backup_status = 'completed' THEN b.backup_date ELSE NULL END,
+                b.backup_status, b.error_message
+            FROM backups b
+            JOIN discs d ON d.id = b.disc_id
+            WHERE NOT EXISTS (SELECT 1 FROM rip_history r WHERE r.id = b.id);
+            """)
+    }
+
+    private func markInterruptedRips() {
+        let now = ISO8601DateFormatter().string(from: Date())
+        execute(sql: """
+            UPDATE rip_history
+            SET backup_status = 'failed', completed_at = '\(now)',
+                error_message = COALESCE(error_message, 'Discbot exited before this rip completed')
+            WHERE backup_status = 'in_progress';
+            """)
+    }
+
+    private func tableExists(_ name: String) -> Bool {
+        guard let db = db else { return false }
+        let sql = "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1"
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return false }
+        defer { sqlite3_finalize(stmt) }
+        bindText(stmt, index: 1, value: name)
+        return sqlite3_step(stmt) == SQLITE_ROW
+    }
 
     private func execute(sql: String) {
         guard let db = db else { return }
-
-        var errMsg: UnsafeMutablePointer<CChar>?
-        if sqlite3_exec(db, sql, nil, nil, &errMsg) != SQLITE_OK {
-            if let errMsg = errMsg {
-                print("Database: SQL error - \(String(cString: errMsg))")
-                sqlite3_free(errMsg)
+        var error: UnsafeMutablePointer<CChar>?
+        if sqlite3_exec(db, sql, nil, nil, &error) != SQLITE_OK {
+            if let error = error {
+                print("Database: SQL error - \(String(cString: error))")
+                sqlite3_free(error)
             }
         }
     }
 
-    // MARK: - Disc Operations
+    // MARK: - Disc identity and sightings
 
-    func insertOrUpdateDisc(_ disc: DiscRecord) -> Int64? {
-        return queue.sync {
+    func upsertDisc(_ disc: DiscRecord, sessionId: String) -> DiscRecord? {
+        queue.sync {
             guard let db = db else { return nil }
-
             let now = ISO8601DateFormatter().string(from: Date())
 
-            // Check if disc exists
-            if let existing = getDiscSync(slotId: disc.slotId) {
-                // Update existing
-                let sql = """
-                    UPDATE discs SET
-                        volume_label = ?,
-                        disc_type = ?,
-                        size_bytes = ?,
-                        artist = COALESCE(?, artist),
-                        album = COALESCE(?, album),
-                        year = COALESCE(?, year),
-                        metadata_source = COALESCE(?, metadata_source),
-                        last_seen_at = ?
-                    WHERE slot_id = ?
-                    """
+            let sql = """
+                INSERT INTO catalog_discs (
+                    fingerprint, fingerprint_kind, fingerprint_confidence,
+                    volume_label, disc_type, size_bytes, musicbrainz_disc_id,
+                    artist, album, year, genre, track_count, metadata_source,
+                    first_seen_at, last_seen_at, metadata_fetched_at,
+                    metadata_provider_id, metadata_overview, artwork_url, metadata_user_edited,
+                    metadata_tracks_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(fingerprint) DO UPDATE SET
+                    fingerprint_kind = excluded.fingerprint_kind,
+                    fingerprint_confidence = MAX(catalog_discs.fingerprint_confidence, excluded.fingerprint_confidence),
+                    volume_label = COALESCE(excluded.volume_label, catalog_discs.volume_label),
+                    disc_type = COALESCE(excluded.disc_type, catalog_discs.disc_type),
+                    size_bytes = COALESCE(excluded.size_bytes, catalog_discs.size_bytes),
+                    artist = CASE WHEN catalog_discs.metadata_user_edited = 1 THEN catalog_discs.artist ELSE COALESCE(excluded.artist, catalog_discs.artist) END,
+                    album = CASE WHEN catalog_discs.metadata_user_edited = 1 THEN catalog_discs.album ELSE COALESCE(excluded.album, catalog_discs.album) END,
+                    year = CASE WHEN catalog_discs.metadata_user_edited = 1 THEN catalog_discs.year ELSE COALESCE(excluded.year, catalog_discs.year) END,
+                    genre = CASE WHEN catalog_discs.metadata_user_edited = 1 THEN catalog_discs.genre ELSE COALESCE(excluded.genre, catalog_discs.genre) END,
+                    track_count = CASE WHEN catalog_discs.metadata_user_edited = 1 THEN catalog_discs.track_count ELSE COALESCE(excluded.track_count, catalog_discs.track_count) END,
+                    metadata_source = CASE WHEN catalog_discs.metadata_user_edited = 1 THEN catalog_discs.metadata_source ELSE COALESCE(excluded.metadata_source, catalog_discs.metadata_source) END,
+                    metadata_fetched_at = CASE WHEN catalog_discs.metadata_user_edited = 1 THEN catalog_discs.metadata_fetched_at ELSE COALESCE(excluded.metadata_fetched_at, catalog_discs.metadata_fetched_at) END,
+                    metadata_provider_id = CASE WHEN catalog_discs.metadata_user_edited = 1 THEN catalog_discs.metadata_provider_id ELSE COALESCE(excluded.metadata_provider_id, catalog_discs.metadata_provider_id) END,
+                    metadata_overview = CASE WHEN catalog_discs.metadata_user_edited = 1 THEN catalog_discs.metadata_overview ELSE COALESCE(excluded.metadata_overview, catalog_discs.metadata_overview) END,
+                    artwork_url = CASE WHEN catalog_discs.metadata_user_edited = 1 THEN catalog_discs.artwork_url ELSE COALESCE(excluded.artwork_url, catalog_discs.artwork_url) END,
+                    metadata_tracks_json = CASE WHEN catalog_discs.metadata_user_edited = 1 THEN catalog_discs.metadata_tracks_json ELSE COALESCE(excluded.metadata_tracks_json, catalog_discs.metadata_tracks_json) END,
+                    last_seen_at = excluded.last_seen_at
+                """
+            var stmt: OpaquePointer?
+            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
+            defer { sqlite3_finalize(stmt) }
 
-                var stmt: OpaquePointer?
-                if sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK {
-                    sqlite3_bind_text(stmt, 1, disc.volumeLabel, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
-                    sqlite3_bind_text(stmt, 2, disc.discType, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
-                    if let size = disc.sizeBytes {
-                        sqlite3_bind_int64(stmt, 3, size)
-                    } else {
-                        sqlite3_bind_null(stmt, 3)
-                    }
-                    sqlite3_bind_text(stmt, 4, disc.artist, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
-                    sqlite3_bind_text(stmt, 5, disc.album, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
-                    sqlite3_bind_text(stmt, 6, disc.year, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
-                    sqlite3_bind_text(stmt, 7, disc.metadataSource, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
-                    sqlite3_bind_text(stmt, 8, now, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
-                    sqlite3_bind_int(stmt, 9, Int32(disc.slotId))
+            bindText(stmt, index: 1, value: disc.fingerprint)
+            bindText(stmt, index: 2, value: disc.fingerprintKind)
+            sqlite3_bind_int(stmt, 3, Int32(disc.fingerprintConfidence))
+            bindText(stmt, index: 4, value: disc.volumeLabel)
+            bindText(stmt, index: 5, value: disc.discType)
+            bindInt64(stmt, index: 6, value: disc.sizeBytes)
+            bindText(stmt, index: 7, value: disc.musicbrainzDiscId)
+            bindText(stmt, index: 8, value: disc.artist)
+            bindText(stmt, index: 9, value: disc.album)
+            bindText(stmt, index: 10, value: disc.year)
+            bindText(stmt, index: 11, value: disc.genre)
+            bindInt(stmt, index: 12, value: disc.trackCount)
+            bindText(stmt, index: 13, value: disc.metadataSource)
+            bindText(stmt, index: 14, value: disc.firstSeenAt ?? now)
+            bindText(stmt, index: 15, value: now)
+            bindText(stmt, index: 16, value: disc.metadataFetchedAt)
+            bindText(stmt, index: 17, value: disc.metadataProviderID)
+            bindText(stmt, index: 18, value: disc.metadataOverview)
+            bindText(stmt, index: 19, value: disc.artworkURL)
+            sqlite3_bind_int(stmt, 20, disc.metadataUserEdited ? 1 : 0)
+            bindText(stmt, index: 21, value: encodeTracks(disc.metadataTracks))
+            guard sqlite3_step(stmt) == SQLITE_DONE else { return nil }
 
-                    sqlite3_step(stmt)
-                    sqlite3_finalize(stmt)
-                }
-                return existing.id
-            } else {
-                // Insert new
-                let sql = """
-                    INSERT INTO discs (slot_id, volume_label, disc_type, size_bytes, artist, album, year, metadata_source, first_seen_at, last_seen_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """
-
-                var stmt: OpaquePointer?
-                if sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK {
-                    sqlite3_bind_int(stmt, 1, Int32(disc.slotId))
-                    sqlite3_bind_text(stmt, 2, disc.volumeLabel, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
-                    sqlite3_bind_text(stmt, 3, disc.discType, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
-                    if let size = disc.sizeBytes {
-                        sqlite3_bind_int64(stmt, 4, size)
-                    } else {
-                        sqlite3_bind_null(stmt, 4)
-                    }
-                    sqlite3_bind_text(stmt, 5, disc.artist, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
-                    sqlite3_bind_text(stmt, 6, disc.album, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
-                    sqlite3_bind_text(stmt, 7, disc.year, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
-                    sqlite3_bind_text(stmt, 8, disc.metadataSource, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
-                    sqlite3_bind_text(stmt, 9, now, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
-                    sqlite3_bind_text(stmt, 10, now, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
-
-                    if sqlite3_step(stmt) == SQLITE_DONE {
-                        sqlite3_finalize(stmt)
-                        return sqlite3_last_insert_rowid(db)
-                    }
-                    sqlite3_finalize(stmt)
-                }
-                return nil
-            }
+            guard let stored = getDiscByFingerprintSync(disc.fingerprint, latestSlotId: disc.slotId),
+                  let discId = stored.id else { return nil }
+            insertSightingSync(discId: discId, sessionId: sessionId, slotId: disc.slotId, seenAt: now)
+            return stored
         }
     }
 
-    func getDisc(slotId: Int) -> DiscRecord? {
-        return queue.sync {
-            getDiscSync(slotId: slotId)
+    func getDisc(slotId: Int, sessionId: String) -> DiscRecord? {
+        queue.sync {
+            guard let db = db else { return nil }
+            let sql = """
+                SELECT d.*, s.slot_id
+                FROM disc_sightings s
+                JOIN catalog_discs d ON d.id = s.disc_id
+                WHERE s.session_id = ? AND s.slot_id = ?
+                ORDER BY s.seen_at DESC LIMIT 1
+                """
+            var stmt: OpaquePointer?
+            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
+            defer { sqlite3_finalize(stmt) }
+            bindText(stmt, index: 1, value: sessionId)
+            sqlite3_bind_int(stmt, 2, Int32(slotId))
+            guard sqlite3_step(stmt) == SQLITE_ROW else { return nil }
+            return discFromStatement(stmt)
         }
-    }
-
-    private func getDiscSync(slotId: Int) -> DiscRecord? {
-        guard let db = db else { return nil }
-
-        let sql = "SELECT * FROM discs WHERE slot_id = ?"
-        var stmt: OpaquePointer?
-
-        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
-        defer { sqlite3_finalize(stmt) }
-
-        sqlite3_bind_int(stmt, 1, Int32(slotId))
-
-        guard sqlite3_step(stmt) == SQLITE_ROW else { return nil }
-
-        return discFromStatement(stmt)
     }
 
     func getAllDiscs() -> [DiscRecord] {
-        return queue.sync {
+        queue.sync {
             guard let db = db else { return [] }
-
-            let sql = "SELECT * FROM discs ORDER BY slot_id"
+            let sql = """
+                SELECT d.*, COALESCE((
+                    SELECT s.slot_id FROM disc_sightings s
+                    WHERE s.disc_id = d.id ORDER BY s.seen_at DESC LIMIT 1
+                ), 0) AS latest_slot
+                FROM catalog_discs d
+                ORDER BY d.last_seen_at DESC
+                """
             var stmt: OpaquePointer?
-            var discs: [DiscRecord] = []
-
+            var result: [DiscRecord] = []
             guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
             defer { sqlite3_finalize(stmt) }
-
             while sqlite3_step(stmt) == SQLITE_ROW {
-                if let disc = discFromStatement(stmt) {
-                    discs.append(disc)
-                }
+                if let disc = discFromStatement(stmt) { result.append(disc) }
             }
-
-            return discs
+            return result
         }
+    }
+
+    func updateDiscMetadata(id: Int64, metadata: DiscMetadata, userEdited: Bool) -> DiscRecord? {
+        queue.sync {
+            guard let db = db else { return nil }
+            let sql = """
+                UPDATE catalog_discs SET
+                    artist = ?, album = ?, year = ?, genre = ?, track_count = ?,
+                    metadata_source = ?, metadata_fetched_at = ?, metadata_provider_id = ?,
+                    metadata_overview = ?, artwork_url = ?, metadata_user_edited = ?,
+                    metadata_tracks_json = ?
+                WHERE id = ?
+                """
+            var stmt: OpaquePointer?
+            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
+            defer { sqlite3_finalize(stmt) }
+            bindText(stmt, index: 1, value: metadata.artist)
+            bindText(stmt, index: 2, value: metadata.album)
+            bindText(stmt, index: 3, value: metadata.year)
+            bindText(stmt, index: 4, value: metadata.genre)
+            bindInt(stmt, index: 5, value: metadata.tracks?.count)
+            bindText(stmt, index: 6, value: metadata.source.rawValue)
+            bindText(stmt, index: 7, value: ISO8601DateFormatter().string(from: Date()))
+            bindText(stmt, index: 8, value: metadata.providerID)
+            bindText(stmt, index: 9, value: metadata.overview)
+            bindText(stmt, index: 10, value: metadata.artworkURL)
+            sqlite3_bind_int(stmt, 11, userEdited ? 1 : 0)
+            bindText(stmt, index: 12, value: encodeTracks(metadata.tracks))
+            sqlite3_bind_int64(stmt, 13, id)
+            guard sqlite3_step(stmt) == SQLITE_DONE else { return nil }
+            return getDiscByIDSync(id)
+        }
+    }
+
+    private func getDiscByIDSync(_ id: Int64) -> DiscRecord? {
+        guard let db = db else { return nil }
+        let sql = """
+            SELECT d.*, COALESCE((SELECT s.slot_id FROM disc_sightings s
+                WHERE s.disc_id = d.id ORDER BY s.seen_at DESC LIMIT 1), 0) AS latest_slot
+            FROM catalog_discs d WHERE d.id = ? LIMIT 1
+            """
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
+        defer { sqlite3_finalize(stmt) }
+        sqlite3_bind_int64(stmt, 1, id)
+        guard sqlite3_step(stmt) == SQLITE_ROW else { return nil }
+        return discFromStatement(stmt)
+    }
+
+    func getDiscs(sessionId: String) -> [DiscRecord] {
+        queue.sync {
+            guard let db = db else { return [] }
+            let sql = """
+                SELECT d.*, s.slot_id
+                FROM disc_sightings s
+                JOIN catalog_discs d ON d.id = s.disc_id
+                WHERE s.session_id = ?
+                  AND s.id = (
+                      SELECT s2.id FROM disc_sightings s2
+                      WHERE s2.session_id = s.session_id AND s2.slot_id = s.slot_id
+                      ORDER BY s2.seen_at DESC, s2.id DESC LIMIT 1
+                  )
+                ORDER BY s.slot_id
+                """
+            var stmt: OpaquePointer?
+            var result: [DiscRecord] = []
+            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
+            defer { sqlite3_finalize(stmt) }
+            bindText(stmt, index: 1, value: sessionId)
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                if let disc = discFromStatement(stmt) { result.append(disc) }
+            }
+            return result
+        }
+    }
+
+    func getMostRecentSessionId() -> String? {
+        queue.sync {
+            guard let db = db else { return nil }
+            let sql = """
+                SELECT session_id
+                FROM disc_sightings
+                WHERE session_id <> 'legacy'
+                ORDER BY seen_at DESC, id DESC
+                LIMIT 1
+                """
+            var stmt: OpaquePointer?
+            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
+            defer { sqlite3_finalize(stmt) }
+            guard sqlite3_step(stmt) == SQLITE_ROW else { return nil }
+            return string(stmt, 0)
+        }
+    }
+
+    private func getDiscByFingerprintSync(_ fingerprint: String, latestSlotId: Int) -> DiscRecord? {
+        guard let db = db else { return nil }
+        let sql = "SELECT d.*, ? AS latest_slot FROM catalog_discs d WHERE fingerprint = ? LIMIT 1"
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
+        defer { sqlite3_finalize(stmt) }
+        sqlite3_bind_int(stmt, 1, Int32(latestSlotId))
+        bindText(stmt, index: 2, value: fingerprint)
+        guard sqlite3_step(stmt) == SQLITE_ROW else { return nil }
+        return discFromStatement(stmt)
+    }
+
+    private func insertSightingSync(discId: Int64, sessionId: String, slotId: Int, seenAt: String) {
+        guard let db = db else { return }
+        let sql = "INSERT INTO disc_sightings (disc_id, session_id, slot_id, seen_at) VALUES (?, ?, ?, ?)"
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
+        defer { sqlite3_finalize(stmt) }
+        sqlite3_bind_int64(stmt, 1, discId)
+        bindText(stmt, index: 2, value: sessionId)
+        sqlite3_bind_int(stmt, 3, Int32(slotId))
+        bindText(stmt, index: 4, value: seenAt)
+        sqlite3_step(stmt)
     }
 
     private func discFromStatement(_ stmt: OpaquePointer?) -> DiscRecord? {
         guard let stmt = stmt else { return nil }
-
-        let id = sqlite3_column_int64(stmt, 0)
-        let slotId = Int(sqlite3_column_int(stmt, 1))
-
-        func getString(_ col: Int32) -> String? {
-            guard let ptr = sqlite3_column_text(stmt, col) else { return nil }
-            return String(cString: ptr)
-        }
-
         return DiscRecord(
-            id: id,
-            slotId: slotId,
-            volumeLabel: getString(2),
-            discType: getString(3),
-            sizeBytes: sqlite3_column_type(stmt, 4) != SQLITE_NULL ? sqlite3_column_int64(stmt, 4) : nil,
-            musicbrainzDiscId: getString(5),
-            artist: getString(6),
-            album: getString(7),
-            year: getString(8),
-            genre: getString(9),
-            trackCount: sqlite3_column_type(stmt, 10) != SQLITE_NULL ? Int(sqlite3_column_int(stmt, 10)) : nil,
-            metadataSource: getString(11),
-            firstSeenAt: getString(12),
-            lastSeenAt: getString(13),
-            metadataFetchedAt: getString(14)
+            id: sqlite3_column_int64(stmt, 0),
+            fingerprint: string(stmt, 1) ?? "",
+            fingerprintKind: string(stmt, 2) ?? "unknown",
+            fingerprintConfidence: Int(sqlite3_column_int(stmt, 3)),
+            slotId: Int(sqlite3_column_int(stmt, 22)),
+            volumeLabel: string(stmt, 4),
+            discType: string(stmt, 5),
+            sizeBytes: optionalInt64(stmt, 6),
+            musicbrainzDiscId: string(stmt, 7),
+            artist: string(stmt, 8),
+            album: string(stmt, 9),
+            year: string(stmt, 10),
+            genre: string(stmt, 11),
+            trackCount: optionalInt(stmt, 12),
+            metadataSource: string(stmt, 13),
+            metadataProviderID: string(stmt, 17),
+            metadataOverview: string(stmt, 18),
+            artworkURL: string(stmt, 19),
+            metadataUserEdited: sqlite3_column_int(stmt, 20) != 0,
+            metadataTracks: decodeTracks(string(stmt, 21)),
+            firstSeenAt: string(stmt, 14),
+            lastSeenAt: string(stmt, 15),
+            metadataFetchedAt: string(stmt, 16)
         )
     }
 
-    // MARK: - Backup Operations
+    // MARK: - Rip history
 
-    func insertBackup(_ backup: BackupRecord) -> Int64? {
-        return queue.sync {
+    func startRip(discId: Int64, slotId: Int, path: String) -> Int64? {
+        let ripId: Int64? = queue.sync {
             guard let db = db else { return nil }
-
             let sql = """
-                INSERT INTO backups (disc_id, backup_path, backup_size_bytes, backup_hash, backup_date, backup_status, error_message)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO rip_history (disc_id, slot_id, backup_path, started_at, backup_status)
+                VALUES (?, ?, ?, ?, 'in_progress')
                 """
-
             var stmt: OpaquePointer?
             guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
             defer { sqlite3_finalize(stmt) }
-
-            sqlite3_bind_int64(stmt, 1, backup.discId)
-            sqlite3_bind_text(stmt, 2, backup.backupPath, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
-            if let size = backup.backupSizeBytes {
-                sqlite3_bind_int64(stmt, 3, size)
-            } else {
-                sqlite3_bind_null(stmt, 3)
-            }
-            sqlite3_bind_text(stmt, 4, backup.backupHash, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
-            sqlite3_bind_text(stmt, 5, backup.backupDate, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
-            sqlite3_bind_text(stmt, 6, backup.backupStatus, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
-            sqlite3_bind_text(stmt, 7, backup.errorMessage, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
-
-            if sqlite3_step(stmt) == SQLITE_DONE {
-                return sqlite3_last_insert_rowid(db)
-            }
-            return nil
+            sqlite3_bind_int64(stmt, 1, discId)
+            sqlite3_bind_int(stmt, 2, Int32(slotId))
+            bindText(stmt, index: 3, value: path)
+            bindText(stmt, index: 4, value: ISO8601DateFormatter().string(from: Date()))
+            guard sqlite3_step(stmt) == SQLITE_DONE else { return nil }
+            return sqlite3_last_insert_rowid(db)
         }
+        if let ripId = ripId {
+            recordRipEvent(
+                ripId: ripId, discId: discId, slotId: slotId,
+                type: "started", message: "Ripping to \(path)"
+            )
+        }
+        return ripId
     }
 
-    func getBackups(discId: Int64) -> [BackupRecord] {
-        return queue.sync {
-            guard let db = db else { return [] }
-
-            let sql = "SELECT * FROM backups WHERE disc_id = ? ORDER BY backup_date DESC"
+    func finishRip(
+        id: Int64,
+        status: String,
+        finalPath: String? = nil,
+        sizeBytes: Int64? = nil,
+        hash: String? = nil,
+        error: String? = nil
+    ) {
+        var discId: Int64?
+        var slotId: Int?
+        queue.sync {
+            guard let db = db else { return }
+            let sql = """
+                UPDATE rip_history SET
+                    backup_path = COALESCE(?, backup_path),
+                    backup_size_bytes = ?, backup_hash = ?, completed_at = ?,
+                    backup_status = ?, error_message = ?
+                WHERE id = ?
+                """
             var stmt: OpaquePointer?
-            var backups: [BackupRecord] = []
-
-            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
+            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
             defer { sqlite3_finalize(stmt) }
+            bindText(stmt, index: 1, value: finalPath)
+            bindInt64(stmt, index: 2, value: sizeBytes)
+            bindText(stmt, index: 3, value: hash)
+            bindText(stmt, index: 4, value: ISO8601DateFormatter().string(from: Date()))
+            bindText(stmt, index: 5, value: status)
+            bindText(stmt, index: 6, value: error)
+            sqlite3_bind_int64(stmt, 7, id)
+            sqlite3_step(stmt)
 
-            sqlite3_bind_int64(stmt, 1, discId)
-
-            while sqlite3_step(stmt) == SQLITE_ROW {
-                if let backup = backupFromStatement(stmt) {
-                    backups.append(backup)
+            let lookup = "SELECT disc_id, slot_id FROM rip_history WHERE id = ?"
+            var lookupStatement: OpaquePointer?
+            if sqlite3_prepare_v2(db, lookup, -1, &lookupStatement, nil) == SQLITE_OK {
+                defer { sqlite3_finalize(lookupStatement) }
+                sqlite3_bind_int64(lookupStatement, 1, id)
+                if sqlite3_step(lookupStatement) == SQLITE_ROW {
+                    discId = sqlite3_column_int64(lookupStatement, 0)
+                    slotId = optionalInt(lookupStatement, 1)
                 }
             }
-
-            return backups
+        }
+        if let discId = discId {
+            let message = error ?? finalPath ?? status.capitalized
+            recordRipEvent(ripId: id, discId: discId, slotId: slotId, type: status, message: message)
         }
     }
 
-    func getLatestBackup(slotId: Int) -> BackupRecord? {
-        return queue.sync {
-            guard let db = db else { return nil }
-
+    func markRipReplaced(id: Int64, replacementPath: String) {
+        var discId: Int64?
+        var slotId: Int?
+        queue.sync {
+            guard let db = db else { return }
             let sql = """
-                SELECT b.* FROM backups b
-                JOIN discs d ON b.disc_id = d.id
-                WHERE d.slot_id = ? AND b.backup_status = 'completed'
-                ORDER BY b.backup_date DESC
-                LIMIT 1
+                UPDATE rip_history
+                SET backup_status = 'replaced',
+                    error_message = 'Superseded by ' || ?
+                WHERE id = ? AND backup_status = 'completed'
                 """
-
             var stmt: OpaquePointer?
-            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
+            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
             defer { sqlite3_finalize(stmt) }
+            bindText(stmt, index: 1, value: replacementPath)
+            sqlite3_bind_int64(stmt, 2, id)
+            sqlite3_step(stmt)
 
-            sqlite3_bind_int(stmt, 1, Int32(slotId))
-
-            guard sqlite3_step(stmt) == SQLITE_ROW else { return nil }
-
-            return backupFromStatement(stmt)
+            let lookup = "SELECT disc_id, slot_id FROM rip_history WHERE id = ?"
+            var lookupStatement: OpaquePointer?
+            if sqlite3_prepare_v2(db, lookup, -1, &lookupStatement, nil) == SQLITE_OK {
+                defer { sqlite3_finalize(lookupStatement) }
+                sqlite3_bind_int64(lookupStatement, 1, id)
+                if sqlite3_step(lookupStatement) == SQLITE_ROW {
+                    discId = sqlite3_column_int64(lookupStatement, 0)
+                    slotId = optionalInt(lookupStatement, 1)
+                }
+            }
+        }
+        if let discId = discId {
+            recordRipEvent(
+                ripId: id, discId: discId, slotId: slotId,
+                type: "replaced", message: "Superseded by \(replacementPath)"
+            )
         }
     }
 
-    private func backupFromStatement(_ stmt: OpaquePointer?) -> BackupRecord? {
-        guard let stmt = stmt else { return nil }
-
-        func getString(_ col: Int32) -> String? {
-            guard let ptr = sqlite3_column_text(stmt, col) else { return nil }
-            return String(cString: ptr)
+    func getRecentRipEvents(limit: Int = 250) -> [RipLogRecord] {
+        queue.sync {
+            guard let db = db else { return [] }
+            let sql = """
+                SELECT id, rip_id, disc_id, slot_id, event_type, message, event_at
+                FROM rip_events ORDER BY event_at DESC LIMIT ?
+                """
+            var stmt: OpaquePointer?
+            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
+            defer { sqlite3_finalize(stmt) }
+            sqlite3_bind_int(stmt, 1, Int32(max(1, limit)))
+            var result: [RipLogRecord] = []
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                result.append(RipLogRecord(
+                    id: sqlite3_column_int64(stmt, 0),
+                    ripId: optionalInt64(stmt, 1),
+                    discId: sqlite3_column_int64(stmt, 2),
+                    slotId: optionalInt(stmt, 3),
+                    eventType: string(stmt, 4) ?? "unknown",
+                    message: string(stmt, 5) ?? "",
+                    eventAt: string(stmt, 6) ?? ""
+                ))
+            }
+            return result
         }
+    }
 
-        return BackupRecord(
-            id: sqlite3_column_int64(stmt, 0),
-            discId: sqlite3_column_int64(stmt, 1),
-            backupPath: getString(2) ?? "",
-            backupSizeBytes: sqlite3_column_type(stmt, 3) != SQLITE_NULL ? sqlite3_column_int64(stmt, 3) : nil,
-            backupHash: getString(4),
-            backupDate: getString(5) ?? "",
-            backupStatus: getString(6) ?? "unknown",
-            errorMessage: getString(7)
-        )
+    private func recordRipEvent(
+        ripId: Int64?, discId: Int64, slotId: Int?, type: String, message: String
+    ) {
+        queue.sync {
+            guard let db = db else { return }
+            let sql = """
+                INSERT INTO rip_events (rip_id, disc_id, slot_id, event_type, message, event_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """
+            var stmt: OpaquePointer?
+            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
+            defer { sqlite3_finalize(stmt) }
+            bindInt64(stmt, index: 1, value: ripId)
+            sqlite3_bind_int64(stmt, 2, discId)
+            if let slotId = slotId { sqlite3_bind_int(stmt, 3, Int32(slotId)) }
+            else { sqlite3_bind_null(stmt, 3) }
+            bindText(stmt, index: 4, value: type)
+            bindText(stmt, index: 5, value: message)
+            bindText(stmt, index: 6, value: ISO8601DateFormatter().string(from: Date()))
+            sqlite3_step(stmt)
+        }
+    }
+
+    func getRips(discId: Int64) -> [BackupRecord] {
+        queue.sync { getRipsSync(discId: discId) }
+    }
+
+    func getLatestCompletedRip(discId: Int64) -> BackupRecord? {
+        queue.sync {
+            getRipsSync(discId: discId).first(where: { $0.isCompleted })
+        }
+    }
+
+    private func getRipsSync(discId: Int64) -> [BackupRecord] {
+        guard let db = db else { return [] }
+        let sql = """
+            SELECT id, disc_id, slot_id, backup_path, backup_size_bytes, backup_hash,
+                   started_at, completed_at, backup_status, error_message
+            FROM rip_history WHERE disc_id = ? ORDER BY started_at DESC, id DESC
+            """
+        var stmt: OpaquePointer?
+        var result: [BackupRecord] = []
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
+        defer { sqlite3_finalize(stmt) }
+        sqlite3_bind_int64(stmt, 1, discId)
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            result.append(BackupRecord(
+                id: sqlite3_column_int64(stmt, 0),
+                discId: sqlite3_column_int64(stmt, 1),
+                slotId: optionalInt(stmt, 2),
+                backupPath: string(stmt, 3) ?? "",
+                backupSizeBytes: optionalInt64(stmt, 4),
+                backupHash: string(stmt, 5),
+                startedAt: string(stmt, 6),
+                completedAt: string(stmt, 7),
+                backupStatus: string(stmt, 8) ?? "unknown",
+                errorMessage: string(stmt, 9)
+            ))
+        }
+        return result
+    }
+
+    func getSightings(discId: Int64) -> [DiscSightingRecord] {
+        queue.sync {
+            guard let db = db else { return [] }
+            let sql = """
+                SELECT id, disc_id, session_id, slot_id, seen_at
+                FROM disc_sightings WHERE disc_id = ? ORDER BY seen_at DESC
+                """
+            var stmt: OpaquePointer?
+            var result: [DiscSightingRecord] = []
+            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
+            defer { sqlite3_finalize(stmt) }
+            sqlite3_bind_int64(stmt, 1, discId)
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                result.append(DiscSightingRecord(
+                    id: sqlite3_column_int64(stmt, 0),
+                    discId: sqlite3_column_int64(stmt, 1),
+                    sessionId: string(stmt, 2) ?? "",
+                    slotId: Int(sqlite3_column_int(stmt, 3)),
+                    seenAt: string(stmt, 4) ?? ""
+                ))
+            }
+            return result
+        }
+    }
+
+    // MARK: - SQLite binding helpers
+
+    private func bindText(_ stmt: OpaquePointer?, index: Int32, value: String?) {
+        if let value = value {
+            sqlite3_bind_text(stmt, index, value, -1, transient)
+        } else {
+            sqlite3_bind_null(stmt, index)
+        }
+    }
+
+    private func bindInt64(_ stmt: OpaquePointer?, index: Int32, value: Int64?) {
+        if let value = value { sqlite3_bind_int64(stmt, index, value) }
+        else { sqlite3_bind_null(stmt, index) }
+    }
+
+    private func bindInt(_ stmt: OpaquePointer?, index: Int32, value: Int?) {
+        if let value = value { sqlite3_bind_int(stmt, index, Int32(value)) }
+        else { sqlite3_bind_null(stmt, index) }
+    }
+
+    private func string(_ stmt: OpaquePointer?, _ column: Int32) -> String? {
+        guard let ptr = sqlite3_column_text(stmt, column) else { return nil }
+        return String(cString: ptr)
+    }
+
+    private func optionalInt64(_ stmt: OpaquePointer?, _ column: Int32) -> Int64? {
+        sqlite3_column_type(stmt, column) == SQLITE_NULL ? nil : sqlite3_column_int64(stmt, column)
+    }
+
+    private func optionalInt(_ stmt: OpaquePointer?, _ column: Int32) -> Int? {
+        sqlite3_column_type(stmt, column) == SQLITE_NULL ? nil : Int(sqlite3_column_int(stmt, column))
+    }
+
+    private func encodeTracks(_ tracks: [DiscMetadata.TrackInfo]?) -> String? {
+        guard let tracks = tracks, let data = try? JSONEncoder().encode(tracks) else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
+    private func decodeTracks(_ value: String?) -> [DiscMetadata.TrackInfo]? {
+        guard let value = value, let data = value.data(using: .utf8) else { return nil }
+        return try? JSONDecoder().decode([DiscMetadata.TrackInfo].self, from: data)
     }
 }

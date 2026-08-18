@@ -9,6 +9,8 @@ import Foundation
 
 enum ChangerError: LocalizedError, Equatable {
     case connectionFailed
+    case ownedElsewhere
+    case notResponding
     case notConnected
     case deviceNotFound
     case commandFailed(String)
@@ -29,6 +31,10 @@ enum ChangerError: LocalizedError, Equatable {
         switch self {
         case .connectionFailed:
             return "Failed to connect to DVD changer"
+        case .ownedElsewhere:
+            return "The changer is already in use by another Discbot process"
+        case .notResponding:
+            return "The changer paused communication. Discbot closed the FireWire session and stopped issuing commands; reconnect the cable or retry when the changer is ready."
         case .notConnected:
             return "Not connected to DVD changer"
         case .deviceNotFound:
@@ -59,6 +65,15 @@ enum ChangerError: LocalizedError, Equatable {
             return "Metadata lookup failed: \(reason)"
         case .unknown(let msg):
             return msg
+        }
+    }
+
+    var isTransportUnavailable: Bool {
+        switch self {
+        case .connectionFailed, .notResponding, .notConnected, .deviceNotFound:
+            return true
+        default:
+            return false
         }
     }
 }

@@ -28,5 +28,11 @@
     <string></string>
     <key>NSPrincipalClass</key>
     <string>NSApplication</string>
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>Discbot serves its authenticated rip-control web app to devices on your local network.</string>
+    <key>NSBonjourServices</key>
+    <array>
+        <string>_discbot._tcp</string>
+    </array>
 </dict>
 </plist>

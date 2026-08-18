@@ -43,6 +43,9 @@ jobs:
           echo "LSMinimumSystemVersion: $MIN_OS"
           [ "$MIN_OS" = "10.15" ] || { echo "Expected LSMinimumSystemVersion=10.15"; exit 1; }
 
+      - name: Run hardware-free batch integration test
+        run: build/DerivedData/Build/Products/Release/Discbot.app/Contents/MacOS/Discbot --self-test
+
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:

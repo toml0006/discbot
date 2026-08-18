@@ -84,6 +84,16 @@ struct OperationProgressView: View {
             return "magnifyingglass.circle"
         case .waitingForDiscRemoval:
             return "hand.point.down.fill"
+        case .batchLoading:
+            return "arrow.triangle.2.circlepath"
+        case .batchImaging:
+            return "externaldrive.fill.badge.plus"
+        case .batchScanning:
+            return "rectangle.stack.badge.plus"
+        case .bulkImport:
+            return "tray.and.arrow.down"
+        case .bulkExport:
+            return "tray.and.arrow.up"
         }
     }
 
@@ -109,6 +119,16 @@ struct OperationProgressView: View {
             return "Scanning Slot \(slot)"
         case .waitingForDiscRemoval:
             return "Remove Disc"
+        case .batchLoading:
+            return "Cycling Discs"
+        case .batchImaging:
+            return "Ripping Queue"
+        case .batchScanning:
+            return "Cataloging Discs"
+        case .bulkImport:
+            return "Bulk Loading"
+        case .bulkExport:
+            return "Bulk Unloading"
         }
     }
 }

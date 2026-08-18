@@ -12,6 +12,7 @@ struct RipConfigSheet: View {
     @Environment(\.presentationMode) var presentationMode
 
     @State private var outputDirectory: URL?
+    @State private var duplicatePolicy: DuplicatePolicy = .skipExisting
 
     var body: some View {
         VStack(spacing: 0) {
@@ -31,18 +32,22 @@ struct RipConfigSheet: View {
             outputFolderView
                 .padding()
 
+            duplicatePolicyView
+                .padding(.horizontal)
+                .padding(.bottom, 12)
+
             Divider()
 
             // Actions
             actionButtons
                 .padding()
         }
-        .frame(width: 500, height: 500)
+        .frame(width: 520, height: 570)
     }
 
     private var headerView: some View {
         VStack(spacing: 8) {
-            Text("Image Discs to ISO")
+            Text("Image Discs")
                 .font(.headline)
             Text("Select discs to image and choose a destination folder")
                 .font(.subheadline)
@@ -178,12 +183,39 @@ struct RipConfigSheet: View {
 
             Button("Start Imaging") {
                 if let dir = outputDirectory {
-                    // Signal MainView to start imaging after this sheet dismisses
-                    viewModel.pendingRipDirectory = dir
+                    viewModel.startBatchImaging(outputDirectory: dir, duplicatePolicy: duplicatePolicy)
                     presentationMode.wrappedValue.dismiss()
                 }
             }
             .disabled(viewModel.selectedSlotsForRip.isEmpty || outputDirectory == nil)
+        }
+    }
+
+    private var duplicatePolicyView: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Existing verified rip")
+                .font(.subheadline)
+                .fontWeight(.medium)
+            Picker("", selection: $duplicatePolicy) {
+                Text("Skip").tag(DuplicatePolicy.skipExisting)
+                Text("Replace").tag(DuplicatePolicy.replaceExisting)
+                Text("Keep Both").tag(DuplicatePolicy.imageAgain)
+            }
+            .pickerStyle(SegmentedPickerStyle())
+            Text(duplicatePolicyDescription)
+                .font(.caption)
+                .foregroundColor(.secondary)
+        }
+    }
+
+    private var duplicatePolicyDescription: String {
+        switch duplicatePolicy {
+        case .skipExisting:
+            return "Skip only when the recorded size and SHA-256 still match."
+        case .replaceExisting:
+            return "Verify the new image before removing the previous copy; history is retained."
+        case .imageAgain:
+            return "Create another image and keep every existing copy."
         }
     }
 
@@ -194,7 +226,7 @@ struct RipConfigSheet: View {
         panel.canCreateDirectories = true
         panel.allowsMultipleSelection = false
         panel.prompt = "Choose"
-        panel.message = "Select a folder to save ISO images"
+        panel.message = "Select a folder to save disc images"
 
         if panel.runModal() == .OK {
             outputDirectory = panel.url

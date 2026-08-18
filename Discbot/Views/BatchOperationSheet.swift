@@ -43,6 +43,14 @@ struct BatchOperationSheet: View {
                         errorsSection
                     }
 
+                    if !batchState.skippedSlots.isEmpty {
+                        skippedSection
+                    }
+
+                    if !batchState.replacedSlots.isEmpty {
+                        replacedSection
+                    }
+
                     // Completion summary
                     if batchState.isComplete || batchState.isCancelled {
                         completionSummary
@@ -239,13 +247,55 @@ struct BatchOperationSheet: View {
         )
     }
 
+    private var skippedSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 4) {
+                SFSymbol(name: "forward.fill", size: 12).foregroundColor(.blue)
+                Text("\(batchState.skippedSlots.count) duplicate\(batchState.skippedSlots.count == 1 ? "" : "s") skipped")
+                    .font(.subheadline).foregroundColor(.blue)
+            }
+            ForEach(batchState.skippedSlots.indices, id: \.self) { index in
+                let skipped = batchState.skippedSlots[index]
+                Text("Slot \(skipped.slot): \(skipped.existingPath)")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+        }
+        .padding(12)
+        .background(RoundedRectangle(cornerRadius: 10).fill(Color.blue.opacity(0.1)))
+    }
+
+    private var replacedSection: some View {
+        HStack(spacing: 8) {
+            SFSymbol(name: "arrow.clockwise.circle.fill", size: 14).foregroundColor(.purple)
+            Text("\(batchState.replacedSlots.count) previous image\(batchState.replacedSlots.count == 1 ? "" : "s") safely replaced")
+                .font(.subheadline)
+            Spacer()
+            Text(batchState.replacedSlots.map(String.init).joined(separator: ", "))
+                .font(.caption)
+                .foregroundColor(.secondary)
+        }
+        .padding(12)
+        .background(RoundedRectangle(cornerRadius: 10).fill(Color.purple.opacity(0.1)))
+    }
+
     private var completionSummary: some View {
         let succeeded = batchState.completedSlots.count
         let failed = batchState.failedSlots.count
+        let skipped = batchState.skippedSlots.count
         let total = batchState.totalCount
 
         return VStack(spacing: 8) {
-            if batchState.isCancelled {
+            if let haltReason = batchState.haltReason {
+                HStack(spacing: 6) {
+                    SFSymbol(name: "exclamationmark.octagon.fill", size: 16).foregroundColor(.red)
+                    Text("Queue stopped with the drive protected")
+                        .font(.subheadline).fontWeight(.medium).foregroundColor(.red)
+                }
+                Text(haltReason).font(.caption).foregroundColor(.secondary)
+            } else if batchState.isCancelled {
                 HStack(spacing: 6) {
                     SFSymbol(name: "xmark", size: 16)
                         .foregroundColor(.orange)
@@ -261,7 +311,7 @@ struct BatchOperationSheet: View {
                 HStack(spacing: 6) {
                     SFSymbol(name: "checkmark.circle.fill", size: 16)
                         .foregroundColor(.green)
-                    Text("All \(succeeded) discs completed successfully")
+                    Text("\(succeeded) imaged, \(skipped) duplicates skipped")
                         .font(.subheadline)
                         .fontWeight(.medium)
                         .foregroundColor(.green)
@@ -334,7 +384,7 @@ struct BatchOperationSheet: View {
         case .loadAll:
             return "Load All Discs"
         case .imageAll:
-            return "Image All Discs"
+            return "Rip Queue"
         case .scanUnknown:
             return "Scan Unknown Discs"
         case nil:

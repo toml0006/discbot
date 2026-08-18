@@ -24,6 +24,14 @@ enum DiscType: Equatable {
     case mixedModeCD      // Audio + data tracks
     case dvd              // DVD-ROM
     case unknown
+
+    var preferredImageExtension: String {
+        switch self {
+        case .audioCDDA: return "zip"
+        case .mixedModeCD: return "bin"
+        case .dataCD, .dvd, .unknown: return "iso"
+        }
+    }
 }
 
 protocol ImagingServicing: AnyObject {
@@ -118,8 +126,8 @@ final class ImagingService: ImagingServicing {
 
         do {
             try process.run()
-            process.waitUntilExit()
-            guard process.terminationStatus == 0 else { return nil }
+            guard process.discbotWaitUntilExit(timeout: 5),
+                  process.terminationStatus == 0 else { return nil }
 
             let data = pipe.fileHandleForReading.readDataToEndOfFile()
             guard
@@ -143,10 +151,13 @@ final class ImagingService: ImagingServicing {
 
     /// Detect the type of disc in the drive (blocking)
     func detectDiscType(bsdName: String) -> DiscType {
-        // Use diskutil to get media info
+        // Use diskutil's property list so drive capabilities (for example a
+        // CD drive that can also read DVDs) cannot be mistaken for the media
+        // that is actually loaded. In particular, this identifies cddafs
+        // without opening the raw FireWire BSD device.
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/sbin/diskutil")
-        process.arguments = ["info", bsdName]
+        process.arguments = ["info", "-plist", bsdName]
 
         let pipe = Pipe()
         process.standardOutput = pipe
@@ -154,23 +165,72 @@ final class ImagingService: ImagingServicing {
 
         do {
             try process.run()
-            process.waitUntilExit()
+            guard process.discbotWaitUntilExit(timeout: 5) else {
+                throw ImagingError.timeout
+            }
 
             let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            let output = String(data: data, encoding: .utf8) ?? ""
-
-            if output.contains("DVD") {
-                return .dvd
-            } else if output.contains("Audio") || output.contains("CDDA") {
-                return .audioCDDA
-            } else if output.contains("CD") {
-                return .dataCD
-            }
+            if let type = Self.discType(fromDiskutilInfo: data) { return type }
         } catch {
             // Ignore errors
         }
 
+        // The published CD TOC is the fallback for media that diskutil cannot
+        // classify (notably mixed-mode CDs). NativeRawCDReader only reads that
+        // IORegistry property here; the raw descriptor is opened lazily if a
+        // caller later requests sectors.
+        if let cdType = RawCDImageService.detectDiscType(bsdName: bsdName) {
+            return cdType
+        }
+
         return .unknown
+    }
+
+    /// Parse only media-specific fields from `diskutil info -plist`.
+    /// `OpticalDeviceType` deliberately is not consulted because it describes
+    /// the drive's capabilities, not the disc currently in the drive.
+    static func discType(fromDiskutilInfo data: Data) -> DiscType? {
+        guard
+            let propertyList = try? PropertyListSerialization.propertyList(
+                from: data,
+                options: [],
+                format: nil
+            ),
+            let info = propertyList as? [String: Any]
+        else { return nil }
+
+        func normalized(_ key: String) -> String {
+            (info[key] as? String ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .uppercased()
+        }
+
+        let filesystemName = normalized("FilesystemName")
+        let filesystemType = normalized("FilesystemType")
+        let filesystemVisibleName = normalized("FilesystemUserVisibleName")
+        let content = normalized("Content")
+        let opticalMediaType = normalized("OpticalMediaType")
+        let volumeName = normalized("VolumeName")
+
+        if filesystemName == "CD-DA"
+            || filesystemType == "CDDAFS"
+            || filesystemVisibleName == "CD AUDIO"
+            || content == "CD_DA"
+            || volumeName == "AUDIO CD"
+        {
+            return .audioCDDA
+        }
+        if opticalMediaType.hasPrefix("DVD") || content.hasPrefix("DVD") {
+            return .dvd
+        }
+        if opticalMediaType.hasPrefix("CD")
+            || content.hasPrefix("CD_")
+            || filesystemName.contains("ISO 9660")
+            || filesystemType == "CD9660"
+        {
+            return .dataCD
+        }
+        return nil
     }
 
     /// Create an ISO image using hdiutil (blocking)
@@ -186,8 +246,21 @@ final class ImagingService: ImagingServicing {
         }
 
         let outputBase = outputPath.deletingPathExtension()
-        let cdrPath = outputBase.appendingPathExtension("cdr")
         let isoPath = outputBase.appendingPathExtension("iso")
+        let temporaryBase = outputBase
+            .deletingLastPathComponent()
+            .appendingPathComponent(".\(outputBase.lastPathComponent).\(UUID().uuidString).partial")
+        let temporaryCDR = temporaryBase.appendingPathExtension("cdr")
+        let fileManager = FileManager.default
+
+        guard !fileManager.fileExists(atPath: isoPath.path) else {
+            throw ImagingError.writeFailed(isoPath)
+        }
+        defer {
+            if fileManager.fileExists(atPath: temporaryCDR.path) {
+                try? fileManager.removeItem(at: temporaryCDR)
+            }
+        }
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/hdiutil")
@@ -196,7 +269,7 @@ final class ImagingService: ImagingServicing {
             "-srcdevice", "/dev/\(bsdName)",
             "-format", "UDTO",
             "-puppetstrings",
-            "-o", outputBase.path
+            "-o", temporaryBase.path
         ]
 
         let pipe = Pipe()
@@ -304,10 +377,12 @@ final class ImagingService: ImagingServicing {
             throw ImagingError.processFailed(process.terminationStatus, reason)
         }
 
-        // Rename .cdr to .iso (they are equivalent for data discs)
-        if FileManager.default.fileExists(atPath: cdrPath.path) {
-            try FileManager.default.moveItem(at: cdrPath, to: isoPath)
+        // UDTO is an ISO payload with a .cdr suffix. Publish only after hdiutil
+        // has completed successfully so cancellation never leaves a final-named file.
+        guard fileManager.fileExists(atPath: temporaryCDR.path) else {
+            throw ImagingError.writeFailed(temporaryCDR)
         }
+        try fileManager.moveItem(at: temporaryCDR, to: isoPath)
 
         let elapsed = max(Date().timeIntervalSince(startTime), 0.001)
         let speed = totalBytes.map { Double($0) / elapsed }
@@ -323,7 +398,7 @@ final class ImagingService: ImagingServicing {
         return isoPath
     }
 
-    /// Create a BIN/CUE image for audio CDs (not yet implemented)
+    /// Create a lossless BIN/CUE image from complete 2,352-byte CD sectors.
     func createBINCUEImage(
         bsdName: String,
         outputPath: URL,
@@ -331,9 +406,212 @@ final class ImagingService: ImagingServicing {
         control: ImagingControl? = nil,
         progress: @escaping (ImagingProgressInfo) -> Void
     ) throws -> URL {
-        // For audio CDs, we'd need to use IOCDMediaBSDClient.h ioctls for raw sector reading
-        // For now, fall back to ISO format
-        throw ImagingError.unsupportedDiscType("Audio CD BIN/CUE imaging not yet implemented. Use ISO format.")
+        return try RawCDImageService.createImage(
+            bsdName: bsdName,
+            outputPath: outputPath,
+            control: control,
+            progress: progress
+        )
+    }
+
+    /// Archive Catalina's cddafs track files as a lossless, portable ZIP.
+    /// The Sony FireWire bridge can deadlock during raw BSD-device open, while
+    /// cddafs is Apple's supported audio-CD path and exposes the same 16-bit,
+    /// 44.1 kHz PCM audio as AIFF files with track boundaries preserved.
+    func createCDDAArchive(
+        bsdName: String,
+        outputPath: URL,
+        totalBytes: Int64? = nil,
+        control: ImagingControl? = nil,
+        progress: @escaping (ImagingProgressInfo) -> Void
+    ) throws -> URL {
+        if control?.isCancelled == true { throw ImagingError.cancelled }
+
+        let fileManager = FileManager.default
+
+        func currentMountURL() -> URL? {
+            guard let pointer = mount_get_mount_point(bsdName) else { return nil }
+            let path = String(cString: pointer)
+            free(UnsafeMutableRawPointer(mutating: pointer))
+            return path.isEmpty ? nil : URL(fileURLWithPath: path, isDirectory: true)
+        }
+
+        guard currentMountURL() != nil else { throw ImagingError.discNotReady }
+
+        let outputBase = outputPath.deletingPathExtension()
+        let archiveURL = outputBase.appendingPathExtension("zip")
+        let temporaryURL = outputBase
+            .deletingLastPathComponent()
+            .appendingPathComponent(".\(outputBase.lastPathComponent).\(UUID().uuidString).partial.zip")
+        let zipWorkingURL = outputBase
+            .deletingLastPathComponent()
+            .appendingPathComponent(".\(outputBase.lastPathComponent).\(UUID().uuidString).zipwork", isDirectory: true)
+        guard !fileManager.fileExists(atPath: archiveURL.path) else {
+            throw ImagingError.writeFailed(archiveURL)
+        }
+        try fileManager.createDirectory(
+            at: zipWorkingURL,
+            withIntermediateDirectories: true,
+            attributes: nil
+        )
+        defer {
+            try? fileManager.removeItem(at: temporaryURL)
+            try? fileManager.removeItem(at: zipWorkingURL)
+        }
+
+        // Do not enumerate cddafs with Foundation here. On Catalina,
+        // URLResourceValues can issue an open that never returns on this
+        // FireWire bridge even though ordinary sequential file reads work.
+        // The published TOC provides an estimate without touching the mount.
+        let discLayout = try? NativeRawCDReader(bsdName: bsdName).layout
+        guard let layout = discLayout, !layout.tracks.isEmpty else {
+            throw ImagingError.discNotReady
+        }
+        let trackNumbers = layout.tracks.map(\.number)
+        let tocBytes = Int64(layout.sectorCount) * Int64(DISCBOT_CD_SECTOR_SIZE)
+        let expectedBytes: Int64? = totalBytes ?? tocBytes
+        let startedAt = Date()
+
+        var archiveSucceeded = false
+        var lastStatus: Int32 = -1
+        var lastDiagnostics = "zip could not archive the audio tracks"
+        for attempt in 0..<5 {
+            if control?.isCancelled == true { throw ImagingError.cancelled }
+            if fileManager.fileExists(atPath: temporaryURL.path) {
+                try? fileManager.removeItem(at: temporaryURL)
+            }
+            guard let sourceURL = currentMountURL() else {
+                if attempt < 4 {
+                    Thread.sleep(forTimeInterval: 2)
+                    continue
+                }
+                break
+            }
+
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/zip")
+            let trackPaths = trackNumbers.map {
+                sourceURL.appendingPathComponent("\($0) Audio Track.aiff").path
+            }
+            // Pass every TOC-derived track path explicitly. Directory walkers
+            // such as FileManager and ditto call opendir(), which Catalina's
+            // cddafs can block forever on this bridge. Store mode (-0) keeps
+            // the lossless PCM untouched and avoids pointless recompression.
+            // zip normally hides its growing output in an unpredictable `zi*`
+            // file. Give it a job-specific work directory so progress can be
+            // measured and pushed to the web client while a track is reading.
+            process.arguments = ["-q", "-0", "-j", "-b", zipWorkingURL.path, temporaryURL.path] + trackPaths
+            let errorPipe = Pipe()
+            process.standardOutput = FileHandle.nullDevice
+            process.standardError = errorPipe
+
+            do {
+                try process.run()
+            } catch {
+                throw ImagingError.processFailed(-1, "Could not start the audio-CD ZIP writer: \(error.localizedDescription)")
+            }
+            control?.attach(process: process)
+            while process.isRunning {
+                if control?.isCancelled == true { process.terminate() }
+                let publishedBytes = ((try? fileManager.attributesOfItem(atPath: temporaryURL.path)[.size]) as? NSNumber)?.int64Value ?? 0
+                let workingBytes = (try? fileManager.contentsOfDirectory(
+                    at: zipWorkingURL,
+                    includingPropertiesForKeys: [.fileSizeKey],
+                    options: [.skipsHiddenFiles]
+                ))?.reduce(Int64(0)) { largest, url in
+                    let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize).map(Int64.init) ?? 0
+                    return max(largest, size)
+                } ?? 0
+                let archiveBytes = max(publishedBytes, workingBytes)
+                let elapsed = max(Date().timeIntervalSince(startedAt), 0.001)
+                let speed = archiveBytes > 0 ? Double(archiveBytes) / elapsed : nil
+                let fraction = expectedBytes.map { min(Double(archiveBytes) / Double(max($0, 1)), 0.99) } ?? 0
+                progress(ImagingProgressInfo(
+                    fractionCompleted: fraction,
+                    bytesTransferred: archiveBytes,
+                    totalBytes: expectedBytes,
+                    speedBytesPerSecond: speed,
+                    etaSeconds: nil
+                ))
+                Thread.sleep(forTimeInterval: 0.25)
+            }
+            process.waitUntilExit()
+            control?.attach(process: nil)
+
+            if control?.isCancelled == true { throw ImagingError.cancelled }
+            lastStatus = process.terminationStatus
+            lastDiagnostics = String(
+                data: errorPipe.fileHandleForReading.readDataToEndOfFile(),
+                encoding: .utf8
+            )?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if lastStatus == 0 {
+                archiveSucceeded = true
+                break
+            }
+
+            // Catalina can replace a temporary direct cddafs mount with its
+            // delayed /Volumes mount while the first track is opening. Remove
+            // that partial archive, resolve the current mount, and retry.
+            if attempt < 4 { Thread.sleep(forTimeInterval: 2) }
+        }
+        guard archiveSucceeded else {
+            throw ImagingError.processFailed(
+                lastStatus,
+                lastDiagnostics.isEmpty ? "zip could not archive the audio tracks" : lastDiagnostics
+            )
+        }
+        guard
+            fileManager.fileExists(atPath: temporaryURL.path),
+            let archiveSize = ((try? fileManager.attributesOfItem(atPath: temporaryURL.path)[.size]) as? NSNumber)?.int64Value,
+            archiveSize > 0
+        else { throw ImagingError.writeFailed(temporaryURL) }
+
+        let listing = Process()
+        listing.executableURL = URL(fileURLWithPath: "/usr/bin/unzip")
+        listing.arguments = ["-Z1", temporaryURL.path]
+        let listingPipe = Pipe()
+        listing.standardOutput = listingPipe
+        listing.standardError = FileHandle.nullDevice
+        try listing.run()
+        guard listing.discbotWaitUntilExit(timeout: 10) else {
+            throw ImagingError.timeout
+        }
+        guard listing.terminationStatus == 0 else {
+            throw ImagingError.processFailed(listing.terminationStatus, "Could not inspect the audio-CD ZIP")
+        }
+        let memberNames = String(
+            data: listingPipe.fileHandleForReading.readDataToEndOfFile(),
+            encoding: .utf8
+        )?.lowercased() ?? ""
+        guard memberNames.contains(".aiff") || memberNames.contains(".aif") else {
+            throw ImagingError.processFailed(-1, "The audio-CD ZIP contains no AIFF tracks")
+        }
+
+        // Test the central directory and every member before publishing the
+        // final name, so a damaged/partial ZIP is never recorded as complete.
+        let validation = Process()
+        validation.executableURL = URL(fileURLWithPath: "/usr/bin/unzip")
+        validation.arguments = ["-tqq", temporaryURL.path]
+        validation.standardOutput = FileHandle.nullDevice
+        validation.standardError = FileHandle.nullDevice
+        try validation.run()
+        guard validation.discbotWaitUntilExit(timeout: 120) else {
+            throw ImagingError.timeout
+        }
+        guard validation.terminationStatus == 0 else {
+            throw ImagingError.processFailed(validation.terminationStatus, "Audio-CD ZIP validation failed")
+        }
+
+        try fileManager.moveItem(at: temporaryURL, to: archiveURL)
+        let elapsed = max(Date().timeIntervalSince(startedAt), 0.001)
+        progress(ImagingProgressInfo(
+            fractionCompleted: 1,
+            bytesTransferred: expectedBytes ?? archiveSize,
+            totalBytes: expectedBytes,
+            speedBytesPerSecond: Double(expectedBytes ?? archiveSize) / elapsed,
+            etaSeconds: 0
+        ))
+        return archiveURL
     }
 
     /// Create an image of appropriate type based on disc type (blocking)
@@ -347,27 +625,20 @@ final class ImagingService: ImagingServicing {
     ) throws -> URL {
         switch discType {
         case .audioCDDA:
-            // Try BIN/CUE first, fall back to ISO
-            do {
-                return try createBINCUEImage(
-                    bsdName: bsdName,
-                    outputPath: outputPath,
-                    totalBytes: totalBytes,
-                    control: control,
-                    progress: progress
-                )
-            } catch ImagingError.unsupportedDiscType {
-                // Fall back to ISO
-                return try createISOImage(
-                    bsdName: bsdName,
-                    outputPath: outputPath,
-                    totalBytes: totalBytes,
-                    control: control,
-                    progress: progress
-                )
-            }
+            return try createCDDAArchive(
+                bsdName: bsdName,
+                outputPath: outputPath,
+                totalBytes: totalBytes,
+                control: control,
+                progress: progress
+            )
 
-        case .dataCD, .dvd, .mixedModeCD, .unknown:
+        case .mixedModeCD:
+            throw ImagingError.unsupportedDiscType(
+                "Mixed-mode CD raw imaging is disabled on this Sony FireWire bridge because the raw-device open can lock the changer"
+            )
+
+        case .dataCD, .dvd, .unknown:
             return try createISOImage(
                 bsdName: bsdName,
                 outputPath: outputPath,
@@ -414,12 +685,16 @@ final class MockImagingService: ImagingServicing {
     ]
 
     /// Imaging speed simulation: ~2-6 seconds per disc (fast enough for demo, slow enough to see progress)
-    private let imageDurationRange: ClosedRange<Double> = 2.0...6.0
+    private let imageDurationRange: ClosedRange<Double>
+
+    init(imageDurationRange: ClosedRange<Double> = 2.0...6.0) {
+        self.imageDurationRange = imageDurationRange
+    }
 
     private func mockDisc(for bsdName: String) -> MockDisc {
         // Extract serial from bsdName like "mockdisk42" to pick a deterministic disc
         let serial = Int(bsdName.filter { $0.isNumber }) ?? 0
-        return mockDiscs[serial % mockDiscs.count]
+        return mockDiscs[max(serial - 1, 0) % mockDiscs.count]
     }
 
     func estimateDiscSizeBytes(bsdName: String) -> Int64? {

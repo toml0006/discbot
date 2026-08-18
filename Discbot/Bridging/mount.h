@@ -24,6 +24,12 @@ bool mount_is_disc_present(void);
 /* Mount a disc by BSD name. Returns mount point (caller must free) or NULL. */
 char *mount_disc(const char *bsd_name, int timeout);
 
+/* Mount at an explicit directory. Returns mount point (caller must free) or NULL. */
+char *mount_disc_at(const char *bsd_name, const char *mount_path, int timeout);
+
+/* Mount at the standard path without advertising the volume to GUI indexers. */
+char *mount_disc_nobrowse(const char *bsd_name, int timeout);
+
 /* Unmount a disc by BSD name. Returns 0 on success. */
 int mount_unmount_disc(const char *bsd_name, bool force);
 
