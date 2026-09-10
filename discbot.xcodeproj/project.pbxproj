@@ -44,6 +44,8 @@
 		AA0053 /* DiscIdentityService.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0053; };
 		AA0058 /* RawCDImageService.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0058; };
 		AA0059 /* RemoteControlServer.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0059; };
+		AA0060 /* RemoteCarouselRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0060; };
+		AA0061 /* DVDVideoImagingService.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0061; };
 		AA0054 /* CatalogView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0054; };
 		/* mchanger library */
 		AA0020 /* mchanger.c in Sources */ = {isa = PBXBuildFile; fileRef = AB0020; };
@@ -52,6 +54,7 @@
 			AA0031 /* IOKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AB0031; };
 			AA0032 /* DiskArbitration.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AB0032; };
 			AA0033 /* DiscRecording.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AB0033; };
+			AA0034 /* NetFS.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AB0034; };
 			/* Resources */
 			AA0044 /* Discbot.icns in Resources */ = {isa = PBXBuildFile; fileRef = AB0044; };
 			AA0045 /* AppIcon128.png in Resources */ = {isa = PBXBuildFile; fileRef = AB0045; };
@@ -94,6 +97,8 @@
 		AB0053 /* DiscIdentityService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiscIdentityService.swift; sourceTree = "<group>"; };
 		AB0058 /* RawCDImageService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RawCDImageService.swift; sourceTree = "<group>"; };
 		AB0059 /* RemoteControlServer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteControlServer.swift; sourceTree = "<group>"; };
+		AB0060 /* RemoteCarouselRenderer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteCarouselRenderer.swift; sourceTree = "<group>"; };
+		AB0061 /* DVDVideoImagingService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DVDVideoImagingService.swift; sourceTree = "<group>"; };
 		AB0054 /* CatalogView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CatalogView.swift; sourceTree = "<group>"; };
 		/* mchanger library */
 		AB0020 /* mchanger.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = mchanger.c; sourceTree = "<group>"; };
@@ -115,6 +120,7 @@
 			AB0031 /* IOKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = IOKit.framework; path = System/Library/Frameworks/IOKit.framework; sourceTree = SDKROOT; };
 			AB0032 /* DiskArbitration.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = DiskArbitration.framework; path = System/Library/Frameworks/DiskArbitration.framework; sourceTree = SDKROOT; };
 			AB0033 /* DiscRecording.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = DiscRecording.framework; path = System/Library/Frameworks/DiscRecording.framework; sourceTree = SDKROOT; };
+			AB0034 /* NetFS.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = NetFS.framework; path = System/Library/Frameworks/NetFS.framework; sourceTree = SDKROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -126,6 +132,7 @@
 				AA0031 /* IOKit.framework in Frameworks */,
 				AA0032 /* DiskArbitration.framework in Frameworks */,
 				AA0033 /* DiscRecording.framework in Frameworks */,
+				AA0034 /* NetFS.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -173,6 +180,7 @@
 				AB0031 /* IOKit.framework */,
 				AB0032 /* DiskArbitration.framework */,
 				AB0033 /* DiscRecording.framework */,
+				AB0034 /* NetFS.framework */,
 			);
 			name = Frameworks;
 			sourceTree = "<group>";
@@ -217,6 +225,8 @@
 				AB0053 /* DiscIdentityService.swift */,
 				AB0058 /* RawCDImageService.swift */,
 				AB0059 /* RemoteControlServer.swift */,
+				AB0060 /* RemoteCarouselRenderer.swift */,
+				AB0061 /* DVDVideoImagingService.swift */,
 			);
 			path = Services;
 			sourceTree = "<group>";
@@ -387,6 +397,8 @@
 				AA0053 /* DiscIdentityService.swift in Sources */,
 				AA0058 /* RawCDImageService.swift in Sources */,
 				AA0059 /* RemoteControlServer.swift in Sources */,
+				AA0060 /* RemoteCarouselRenderer.swift in Sources */,
+				AA0061 /* DVDVideoImagingService.swift in Sources */,
 				AA0054 /* CatalogView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

@@ -19,6 +19,7 @@ enum ChangerError: LocalizedError, Equatable {
     case slotOccupied(Int)
     case driveNotEmpty
     case driveEmpty
+    case opticalDriveUnavailable
     case mountFailed(String)
     case unmountFailed(String)
     case timeout
@@ -51,6 +52,8 @@ enum ChangerError: LocalizedError, Equatable {
             return "Drive already contains a disc"
         case .driveEmpty:
             return "No disc in drive"
+        case .opticalDriveUnavailable:
+            return "The changer is online, but macOS cannot see its optical drive. Stop the batch and restore the optical-drive connection before moving discs."
         case .mountFailed(let reason):
             return "Failed to mount disc: \(reason)"
         case .unmountFailed(let reason):

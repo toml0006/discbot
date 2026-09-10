@@ -15,11 +15,18 @@ extern "C" {
 /* Wait for a disc to appear (timeout in seconds). Returns 0 on success. */
 int mount_wait_for_disc(int timeout);
 
+/* Mount an SMB/NFS URL without prompting. Saved Keychain credentials may be
+   used. Returns the mounted share root (caller must free) or NULL. */
+char *mount_network_share(const char *url_string, int *status);
+
 /* Find the BSD name of a DVD/CD disc. Caller must free() the result. */
 char *mount_find_dvd_bsd_name(void);
 
 /* Check if a disc is present in any optical drive */
 bool mount_is_disc_present(void);
+
+/* Check whether the changer's optical-drive service is attached to macOS. */
+bool mount_is_optical_drive_available(void);
 
 /* Mount a disc by BSD name. Returns mount point (caller must free) or NULL. */
 char *mount_disc(const char *bsd_name, int timeout);

@@ -422,9 +422,16 @@ struct MainView: View {
         panel.prompt = "Start Batch Rip"
         panel.message = "Choose where disc images should be saved"
 
+        let formatLabel = NSTextField(labelWithString: "Rip format:")
+        formatLabel.frame = NSRect(x: 0, y: 104, width: 420, height: 18)
+        let formatPopup = NSPopUpButton(frame: NSRect(x: 0, y: 70, width: 300, height: 28))
+        formatPopup.addItems(withTitles: RipOutputMode.allCases.map(\.displayName))
+        formatPopup.selectItem(at: 0)
+        formatPopup.toolTip = RipOutputMode.automatic.detail
+
         let duplicateLabel = NSTextField(labelWithString: "When a verified rip already exists:")
-        duplicateLabel.frame = NSRect(x: 0, y: 38, width: 420, height: 18)
-        let duplicatePopup = NSPopUpButton(frame: NSRect(x: 0, y: 4, width: 260, height: 28))
+        duplicateLabel.frame = NSRect(x: 0, y: 42, width: 420, height: 18)
+        let duplicatePopup = NSPopUpButton(frame: NSRect(x: 0, y: 8, width: 260, height: 28))
         duplicatePopup.addItems(withTitles: [
             "Skip existing image",
             "Replace existing image",
@@ -432,7 +439,9 @@ struct MainView: View {
         ])
         duplicatePopup.selectItem(at: 0)
         duplicatePopup.toolTip = "Replace writes and verifies the new image before removing the previous copy."
-        let accessory = NSView(frame: NSRect(x: 0, y: 0, width: 430, height: 62))
+        let accessory = NSView(frame: NSRect(x: 0, y: 0, width: 430, height: 128))
+        accessory.addSubview(formatLabel)
+        accessory.addSubview(formatPopup)
         accessory.addSubview(duplicateLabel)
         accessory.addSubview(duplicatePopup)
         panel.accessoryView = accessory
@@ -446,7 +455,12 @@ struct MainView: View {
         case 2: policy = .imageAgain
         default: policy = .skipExisting
         }
-        viewModel.startBatchImaging(outputDirectory: url, duplicatePolicy: policy)
+        let outputMode = RipOutputMode.allCases[formatPopup.indexOfSelectedItem]
+        viewModel.startBatchImaging(
+            outputDirectory: url,
+            duplicatePolicy: policy,
+            outputMode: outputMode
+        )
     }
 }
 

@@ -6,7 +6,6 @@
 //
 
 import Foundation
-import CommonCrypto
 
 enum DuplicatePolicy: String, Equatable {
     case skipExisting
@@ -123,7 +122,10 @@ final class CatalogService {
             discType: discType,
             volumeLabel: volumeLabel ?? resolvedVolumeLabel
         ), let id = stored.id else { return stored }
-        return database.updateDiscMetadata(id: id, metadata: online, userEdited: false) ?? stored
+        guard let updated = database.updateDiscMetadata(id: id, metadata: online, userEdited: false) else {
+            return stored
+        }
+        return persistArtwork(for: updated)
     }
 
     func getDisc(slotId: Int) -> DiscRecord? {
@@ -145,8 +147,10 @@ final class CatalogService {
         }
     }
 
-    func getStatistics() -> CatalogStatistics {
-        let entries = getCatalogEntries()
+    var revision: Int { database.revision }
+
+    func getStatistics(entries: [CatalogEntry]? = nil) -> CatalogStatistics {
+        let entries = entries ?? getCatalogEntries()
         let rips = entries.flatMap(\.rips)
         let available = rips.filter(\.fileExists)
         return CatalogStatistics(
@@ -167,6 +171,10 @@ final class CatalogService {
         database.getRecentRipEvents(limit: limit)
     }
 
+    func recordActivity(type: String, slotId: Int? = nil, message: String) {
+        database.recordOperationEvent(slotId: slotId, type: type, message: message)
+    }
+
     // MARK: - Metadata
 
     func metadataConfiguration() -> [String: Any] { metadataService.providerConfiguration }
@@ -185,15 +193,49 @@ final class CatalogService {
 
     @discardableResult
     func updateMetadata(discId: Int64, metadata: DiscMetadata, userEdited: Bool = true) -> DiscRecord? {
-        guard let updated = database.updateDiscMetadata(
+        let previousArtworkURL = database.getDisc(id: discId)?.artworkURL
+        guard var updated = database.updateDiscMetadata(
             id: discId,
             metadata: metadata,
             userEdited: userEdited
         ) else { return nil }
+        if previousArtworkURL != updated.artworkURL {
+            updated = database.updateDiscArtworkPath(id: discId, path: nil) ?? updated
+        }
+        updated = persistArtwork(for: updated)
         for rip in database.getRips(discId: discId) where rip.fileExists {
             try? metadataService.writeSidecar(for: updated, ripURL: URL(fileURLWithPath: rip.backupPath))
         }
         return updated
+    }
+
+    /// Returns the durable selected artwork, lazily importing an older rip
+    /// sidecar or provider image for catalogs created before artwork caching.
+    func artworkData(discId: Int64) -> Data? {
+        guard var disc = database.getDisc(id: discId) else { return nil }
+        if let data = metadataService.artworkData(path: disc.artworkPath) { return data }
+
+        for rip in database.getRips(discId: discId) where rip.fileExists {
+            let cover = URL(fileURLWithPath: rip.backupPath)
+                .deletingPathExtension()
+                .appendingPathExtension("cover.jpg")
+            guard let data = try? Data(contentsOf: cover),
+                  let path = metadataService.cacheArtwork(discID: discId, data: data) else { continue }
+            _ = database.updateDiscArtworkPath(id: discId, path: path)
+            return metadataService.artworkData(path: path)
+        }
+
+        disc = persistArtwork(for: disc)
+        return metadataService.artworkData(path: disc.artworkPath)
+    }
+
+    private func persistArtwork(for disc: DiscRecord) -> DiscRecord {
+        guard let id = disc.id else { return disc }
+        if metadataService.artworkData(path: disc.artworkPath) != nil { return disc }
+        guard let path = metadataService.cacheArtwork(discID: id, rawURL: disc.artworkURL) else {
+            return disc
+        }
+        return database.updateDiscArtworkPath(id: id, path: path) ?? disc
     }
 
     // MARK: - Duplicate decisions
@@ -201,8 +243,26 @@ final class CatalogService {
     /// Only reliable identities with a completed image that still exists are
     /// eligible for automatic skipping.
     func existingRipForAutomaticSkip(disc: DiscRecord) -> BackupRecord? {
+        try? existingRipForAutomaticSkip(disc: disc, control: nil)
+    }
+
+    func existingRipForAutomaticSkip(
+        disc: DiscRecord,
+        control: ImagingService.ImagingControl?
+    ) throws -> BackupRecord? {
         guard disc.hasReliableIdentity, let discId = disc.id else { return nil }
-        return database.getRips(discId: discId).first(where: isVerifiedRip)
+        for rip in database.getRips(discId: discId) {
+            try control?.checkCancellation()
+            guard rip.fileExists, let expected = rip.backupHash, !expected.isEmpty else { continue }
+            do {
+                if try integrityHash(for: URL(fileURLWithPath: rip.backupPath), control: control) == expected {
+                    return rip
+                }
+            } catch ImagingError.cancelled {
+                throw ImagingError.cancelled
+            } catch { continue }
+        }
+        return nil
     }
 
     func latestVerifiedRip(disc: DiscRecord) -> BackupRecord? {
@@ -211,7 +271,7 @@ final class CatalogService {
     }
 
     func latestRipForReplacement(disc: DiscRecord) -> BackupRecord? {
-        guard let discId = disc.id else { return nil }
+        guard disc.hasReliableIdentity, let discId = disc.id else { return nil }
         return database.getRips(discId: discId).first(where: { rip in
             guard rip.isCompleted, FileManager.default.fileExists(atPath: rip.backupPath) else { return false }
             if URL(fileURLWithPath: rip.backupPath).pathExtension.lowercased() == "bin" {
@@ -228,12 +288,17 @@ final class CatalogService {
         return database.startRip(discId: discId, slotId: slotId, path: proposedPath.path)
     }
 
-    func recordRipCompleted(ripId: Int64, finalURL: URL, disc: DiscRecord? = nil) throws {
-        let attributes = try FileManager.default.attributesOfItem(atPath: finalURL.path)
-        guard let size = (attributes[.size] as? NSNumber)?.int64Value, size > 0 else {
+    func recordRipCompleted(
+        ripId: Int64, finalURL: URL, disc: DiscRecord? = nil,
+        control: ImagingService.ImagingControl? = nil
+    ) throws {
+        try control?.checkCancellation()
+        let size = try RipArtifactInspector.sizeBytes(at: finalURL)
+        guard size > 0 else {
             throw ImagingError.writeFailed(finalURL)
         }
-        let hash = try integrityHash(for: finalURL)
+        let hash = try integrityHash(for: finalURL, control: control)
+        try control?.checkCancellation()
         if let disc = disc {
             do {
                 try metadataService.writeSidecar(for: disc, ripURL: finalURL)
@@ -243,6 +308,7 @@ final class CatalogService {
                 print("Metadata sidecar could not be written for \(finalURL.path): \(error.localizedDescription)")
             }
         }
+        try control?.checkCancellation()
         database.finishRip(
             id: ripId,
             status: "completed",
@@ -299,6 +365,17 @@ final class CatalogService {
             status: cancelled ? "cancelled" : "failed",
             error: error
         )
+    }
+
+    /// Only used for a newly produced artifact whose catalog commit was cancelled.
+    func discardUncommittedImage(at url: URL) {
+        var urls = [url]
+        if url.pathExtension.lowercased() == "bin" {
+            urls.append(url.deletingPathExtension().appendingPathExtension("cue"))
+        }
+        urls.append(url.deletingPathExtension().appendingPathExtension("metadata.json"))
+        urls.append(url.deletingPathExtension().appendingPathExtension("cover.jpg"))
+        for file in urls { try? FileManager.default.removeItem(at: file) }
     }
 
     func recordRipSkipped(disc: DiscRecord, slotId: Int, existing: BackupRecord) {
@@ -360,31 +437,10 @@ final class CatalogService {
         return actualHash == expectedHash
     }
 
-    private func integrityHash(for primaryURL: URL) throws -> String {
-        var urls = [primaryURL]
-        if primaryURL.pathExtension.lowercased() == "bin" {
-            urls.append(primaryURL.deletingPathExtension().appendingPathExtension("cue"))
-        }
-        var context = CC_SHA256_CTX()
-        CC_SHA256_Init(&context)
-        for url in urls {
-            let marker = Data("\nDISCBOT-FILE:\(url.pathExtension.lowercased())\n".utf8)
-            marker.withUnsafeBytes { bytes in
-                _ = CC_SHA256_Update(&context, bytes.baseAddress, CC_LONG(marker.count))
-            }
-            let handle = try FileHandle(forReadingFrom: url)
-            defer { handle.closeFile() }
-            while true {
-                let data = handle.readData(ofLength: 1024 * 1024)
-                if data.isEmpty { break }
-                data.withUnsafeBytes { bytes in
-                    _ = CC_SHA256_Update(&context, bytes.baseAddress, CC_LONG(data.count))
-                }
-            }
-        }
-        var digest = [UInt8](repeating: 0, count: Int(CC_SHA256_DIGEST_LENGTH))
-        CC_SHA256_Final(&digest, &context)
-        return digest.map { String(format: "%02x", $0) }.joined()
+    private func integrityHash(
+        for primaryURL: URL, control: ImagingService.ImagingControl? = nil
+    ) throws -> String {
+        try RipArtifactInspector.integrityHash(at: primaryURL) { try control?.checkCancellation() }
     }
 
     func getAllBackupStatuses() -> [Int: BackupStatus] {
@@ -415,7 +471,7 @@ final class CatalogService {
     }
 
     private func outputExists(base: URL) -> Bool {
-        let extensions = ["iso", "cdr", "bin", "cue", "zip", "partial"]
+        let extensions = ["iso", "cdr", "bin", "cue", "zip", "dvdmedia", "partial"]
         return extensions.contains {
             FileManager.default.fileExists(atPath: base.appendingPathExtension($0).path)
         } || FileManager.default.fileExists(atPath: base.appendingPathExtension("metadata.json").path)

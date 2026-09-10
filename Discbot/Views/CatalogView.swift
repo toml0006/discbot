@@ -129,9 +129,11 @@ struct CatalogView: View {
 
     private func catalogRow(_ entry: CatalogEntry) -> some View {
         let selected = selectedEntry?.id == entry.id
+        let artworkSize = catalogArtworkSize(for: entry.disc.discType, detailed: false)
         return HStack(spacing: 10) {
-            SFSymbol(name: "opticaldisc", size: 20)
-                .foregroundColor(entry.existingRips.isEmpty ? .secondary : .green)
+            CatalogArtworkView(discId: entry.id, catalogService: catalogService)
+                .frame(width: artworkSize.width, height: artworkSize.height)
+                .id(entry.id)
             VStack(alignment: .leading, spacing: 3) {
                 Text(entry.disc.displayName)
                     .font(.system(.subheadline, design: .rounded))
@@ -174,23 +176,33 @@ struct CatalogView: View {
     }
 
     private func discSummary(_ entry: CatalogEntry) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(entry.disc.displayName).font(.title).fontWeight(.semibold)
-            HStack(spacing: 8) {
-                CapsuleBadge(text: discTypeLabel(entry.disc.discType), color: .blue)
-                if entry.disc.hasReliableIdentity {
-                    CapsuleBadge(text: "duplicate detection ready", color: .green)
-                } else {
-                    CapsuleBadge(text: "identity uncertain", color: .orange)
+        let artworkSize = catalogArtworkSize(for: entry.disc.discType, detailed: true)
+        return HStack(alignment: .top, spacing: 18) {
+            CatalogArtworkView(discId: entry.id, catalogService: catalogService)
+                .frame(width: artworkSize.width, height: artworkSize.height)
+                .id(entry.id)
+            VStack(alignment: .leading, spacing: 8) {
+                Text(entry.disc.displayName).font(.title).fontWeight(.semibold)
+                if let artist = entry.disc.artist, artist != "Unknown" {
+                    Text(artist).font(.headline).foregroundColor(.secondary)
+                }
+                HStack(spacing: 8) {
+                    CapsuleBadge(text: discTypeLabel(entry.disc.discType), color: .blue)
+                    if entry.disc.hasReliableIdentity {
+                        CapsuleBadge(text: "duplicate detection ready", color: .green)
+                    } else {
+                        CapsuleBadge(text: "identity uncertain", color: .orange)
+                    }
+                }
+                Text("Fingerprint: \(entry.disc.fingerprint)")
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundColor(.secondary)
+                    .textSelectionIfAvailable()
+                if let size = entry.disc.sizeBytes {
+                    Text("Media size: \(formatBytes(size))").font(.caption).foregroundColor(.secondary)
                 }
             }
-            Text("Fingerprint: \(entry.disc.fingerprint)")
-                .font(.system(size: 10, design: .monospaced))
-                .foregroundColor(.secondary)
-                .textSelectionIfAvailable()
-            if let size = entry.disc.sizeBytes {
-                Text("Media size: \(formatBytes(size))").font(.caption).foregroundColor(.secondary)
-            }
+            Spacer()
         }
     }
 
@@ -416,6 +428,15 @@ struct CatalogView: View {
         return formatter.string(from: date)
     }
     private func discTypeLabel(_ type: String?) -> String { SlotDiscType.from(catalogString: type).label }
+
+    /// Audio releases use square album art, while DVD releases use the
+    /// conventional 2:3 movie-poster shape. Unknown/data media default to a
+    /// square so artwork is not silently cropped into a video case.
+    private func catalogArtworkSize(for type: String?, detailed: Bool) -> CGSize {
+        let width: CGFloat = detailed ? 120 : 36
+        let isDVD = SlotDiscType.from(catalogString: type) == .dvd
+        return CGSize(width: width, height: isDVD ? width * 1.5 : width)
+    }
     private func ripStatusIcon(_ rip: BackupRecord) -> String {
         if rip.fileExists { return "checkmark.circle.fill" }
         if rip.isReplaced { return "arrow.clockwise.circle.fill" }
@@ -428,6 +449,41 @@ struct CatalogView: View {
         if rip.isReplaced { return .purple }
         if rip.isCompleted { return .orange }
         return .red
+    }
+}
+
+private struct CatalogArtworkView: View {
+    let discId: Int64
+    let catalogService: CatalogService
+
+    @State private var image: NSImage?
+    @State private var loaded = false
+
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 7)
+                .fill(Color(NSColor.controlBackgroundColor))
+            if let image = image {
+                Image(nsImage: image)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+                    .clipShape(RoundedRectangle(cornerRadius: 7))
+            } else {
+                SFSymbol(name: "opticaldisc", size: 20)
+                    .foregroundColor(.secondary)
+            }
+        }
+        .clipped()
+        .onAppear(perform: load)
+    }
+
+    private func load() {
+        guard !loaded else { return }
+        loaded = true
+        DispatchQueue.global(qos: .utility).async {
+            let resolved = catalogService.artworkData(discId: discId).flatMap(NSImage.init(data:))
+            DispatchQueue.main.async { image = resolved }
+        }
     }
 }
 

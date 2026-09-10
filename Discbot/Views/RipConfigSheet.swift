@@ -13,6 +13,7 @@ struct RipConfigSheet: View {
 
     @State private var outputDirectory: URL?
     @State private var duplicatePolicy: DuplicatePolicy = .skipExisting
+    @State private var outputMode: RipOutputMode = .automatic
 
     var body: some View {
         VStack(spacing: 0) {
@@ -32,6 +33,10 @@ struct RipConfigSheet: View {
             outputFolderView
                 .padding()
 
+            outputModeView
+                .padding(.horizontal)
+                .padding(.bottom, 12)
+
             duplicatePolicyView
                 .padding(.horizontal)
                 .padding(.bottom, 12)
@@ -42,7 +47,7 @@ struct RipConfigSheet: View {
             actionButtons
                 .padding()
         }
-        .frame(width: 520, height: 570)
+        .frame(width: 520, height: 650)
     }
 
     private var headerView: some View {
@@ -183,7 +188,11 @@ struct RipConfigSheet: View {
 
             Button("Start Imaging") {
                 if let dir = outputDirectory {
-                    viewModel.startBatchImaging(outputDirectory: dir, duplicatePolicy: duplicatePolicy)
+                    viewModel.startBatchImaging(
+                        outputDirectory: dir,
+                        duplicatePolicy: duplicatePolicy,
+                        outputMode: outputMode
+                    )
                     presentationMode.wrappedValue.dismiss()
                 }
             }
@@ -203,6 +212,24 @@ struct RipConfigSheet: View {
             }
             .pickerStyle(SegmentedPickerStyle())
             Text(duplicatePolicyDescription)
+                .font(.caption)
+                .foregroundColor(.secondary)
+        }
+    }
+
+    private var outputModeView: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Rip format")
+                .font(.subheadline)
+                .fontWeight(.medium)
+            Picker("", selection: $outputMode) {
+                ForEach(RipOutputMode.allCases, id: \.self) { mode in
+                    Text(mode.displayName).tag(mode)
+                }
+            }
+            .labelsHidden()
+            .pickerStyle(PopUpButtonPickerStyle())
+            Text(outputMode.detail)
                 .font(.caption)
                 .foregroundColor(.secondary)
         }

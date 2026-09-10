@@ -15,6 +15,11 @@ final class Database {
     private let databaseURL: URL
     private let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 
+    /// Includes every write through this connection, including artwork and logs.
+    var revision: Int {
+        queue.sync { db.map { Int(sqlite3_total_changes($0)) } ?? 0 }
+    }
+
     init(databaseURL: URL? = nil) {
         if let databaseURL = databaseURL {
             self.databaseURL = databaseURL
@@ -79,7 +84,8 @@ final class Database {
                 metadata_overview TEXT,
                 artwork_url TEXT,
                 metadata_user_edited INTEGER NOT NULL DEFAULT 0,
-                metadata_tracks_json TEXT
+                metadata_tracks_json TEXT,
+                artwork_path TEXT
             );
             CREATE INDEX IF NOT EXISTS idx_catalog_discs_last_seen ON catalog_discs(last_seen_at DESC);
 
@@ -123,6 +129,15 @@ final class Database {
             );
             CREATE INDEX IF NOT EXISTS idx_rip_events_time ON rip_events(event_at DESC);
             CREATE INDEX IF NOT EXISTS idx_rip_events_rip ON rip_events(rip_id, event_at);
+
+            CREATE TABLE IF NOT EXISTS operation_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                slot_id INTEGER,
+                event_type TEXT NOT NULL,
+                message TEXT NOT NULL,
+                event_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_operation_events_time ON operation_events(event_at DESC);
             """)
         ensureMetadataColumns()
     }
@@ -133,7 +148,8 @@ final class Database {
             ("metadata_overview", "TEXT"),
             ("artwork_url", "TEXT"),
             ("metadata_user_edited", "INTEGER NOT NULL DEFAULT 0"),
-            ("metadata_tracks_json", "TEXT")
+            ("metadata_tracks_json", "TEXT"),
+            ("artwork_path", "TEXT")
         ]
         for (name, declaration) in additions where !columnExists(table: "catalog_discs", column: name) {
             execute(sql: "ALTER TABLE catalog_discs ADD COLUMN \(name) \(declaration);")
@@ -368,6 +384,30 @@ final class Database {
         }
     }
 
+    func getDisc(id: Int64) -> DiscRecord? {
+        queue.sync { getDiscByIDSync(id) }
+    }
+
+    @discardableResult
+    func updateDiscArtworkPath(id: Int64, path: String?) -> DiscRecord? {
+        queue.sync {
+            guard let db = db else { return nil }
+            var stmt: OpaquePointer?
+            guard sqlite3_prepare_v2(
+                db,
+                "UPDATE catalog_discs SET artwork_path = ? WHERE id = ?",
+                -1,
+                &stmt,
+                nil
+            ) == SQLITE_OK else { return nil }
+            defer { sqlite3_finalize(stmt) }
+            bindText(stmt, index: 1, value: path)
+            sqlite3_bind_int64(stmt, 2, id)
+            guard sqlite3_step(stmt) == SQLITE_DONE else { return nil }
+            return getDiscByIDSync(id)
+        }
+    }
+
     private func getDiscByIDSync(_ id: Int64) -> DiscRecord? {
         guard let db = db else { return nil }
         let sql = """
@@ -460,7 +500,7 @@ final class Database {
             fingerprint: string(stmt, 1) ?? "",
             fingerprintKind: string(stmt, 2) ?? "unknown",
             fingerprintConfidence: Int(sqlite3_column_int(stmt, 3)),
-            slotId: Int(sqlite3_column_int(stmt, 22)),
+            slotId: Int(sqlite3_column_int(stmt, 23)),
             volumeLabel: string(stmt, 4),
             discType: string(stmt, 5),
             sizeBytes: optionalInt64(stmt, 6),
@@ -474,6 +514,7 @@ final class Database {
             metadataProviderID: string(stmt, 17),
             metadataOverview: string(stmt, 18),
             artworkURL: string(stmt, 19),
+            artworkPath: string(stmt, 22),
             metadataUserEdited: sqlite3_column_int(stmt, 20) != 0,
             metadataTracks: decodeTracks(string(stmt, 21)),
             firstSeenAt: string(stmt, 14),
@@ -600,7 +641,16 @@ final class Database {
             guard let db = db else { return [] }
             let sql = """
                 SELECT id, rip_id, disc_id, slot_id, event_type, message, event_at
-                FROM rip_events ORDER BY event_at DESC LIMIT ?
+                FROM (
+                    SELECT id, rip_id, disc_id, slot_id, event_type, message, event_at,
+                           id AS source_sequence
+                    FROM rip_events
+                    UNION ALL
+                    SELECT -id, NULL, NULL, slot_id, event_type, message, event_at,
+                           id AS source_sequence
+                    FROM operation_events
+                )
+                ORDER BY event_at DESC, source_sequence DESC LIMIT ?
                 """
             var stmt: OpaquePointer?
             guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
@@ -611,7 +661,7 @@ final class Database {
                 result.append(RipLogRecord(
                     id: sqlite3_column_int64(stmt, 0),
                     ripId: optionalInt64(stmt, 1),
-                    discId: sqlite3_column_int64(stmt, 2),
+                    discId: optionalInt64(stmt, 2),
                     slotId: optionalInt(stmt, 3),
                     eventType: string(stmt, 4) ?? "unknown",
                     message: string(stmt, 5) ?? "",
@@ -619,6 +669,25 @@ final class Database {
                 ))
             }
             return result
+        }
+    }
+
+    func recordOperationEvent(slotId: Int?, type: String, message: String) {
+        queue.sync {
+            guard let db = db else { return }
+            let sql = """
+                INSERT INTO operation_events (slot_id, event_type, message, event_at)
+                VALUES (?, ?, ?, ?)
+                """
+            var stmt: OpaquePointer?
+            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
+            defer { sqlite3_finalize(stmt) }
+            if let slotId = slotId { sqlite3_bind_int(stmt, 1, Int32(slotId)) }
+            else { sqlite3_bind_null(stmt, 1) }
+            bindText(stmt, index: 2, value: type)
+            bindText(stmt, index: 3, value: message)
+            bindText(stmt, index: 4, value: ISO8601DateFormatter().string(from: Date()))
+            sqlite3_step(stmt)
         }
     }
 

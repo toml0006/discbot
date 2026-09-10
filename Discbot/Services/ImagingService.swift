@@ -34,6 +34,74 @@ enum DiscType: Equatable {
     }
 }
 
+enum RipOutputMode: String, Codable, CaseIterable, Hashable {
+    /// Preserve the established per-media outputs: lossless AIFF ZIP for
+    /// audio CDs and ISO for filesystem discs.
+    case automatic
+    /// Prefer a single playable ISO for filesystem discs. CD-DA remains a
+    /// lossless AIFF ZIP because an audio CD has no ISO/UDF filesystem.
+    case iso
+    /// Preserve a decrypted DVD-Video folder instead of rebuilding it as an
+    /// ISO. Other media retain their established lossless output format.
+    case dvdFolder
+
+    var displayName: String {
+        switch self {
+        case .automatic: return "Best format for each disc"
+        case .iso: return "ISO disc image"
+        case .dvdFolder: return "DVD folder (faster)"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .automatic:
+            return "Audio CDs become lossless AIFF ZIP archives; data CDs and DVDs become ISO images."
+        case .iso:
+            return "Data discs and DVDs become playable ISO images. Audio CDs remain lossless AIFF ZIP archives because CD-DA cannot be represented by ISO."
+        case .dvdFolder:
+            return "DVD-Video discs become playable .dvdmedia folders without the extra ISO-building pass. Other discs keep their normal lossless format."
+        }
+    }
+
+    func preferredExtension(for discType: DiscType) -> String {
+        if self == .dvdFolder && discType == .dvd { return "dvdmedia" }
+        // Every mode intentionally retains the safe Catalina audio path.
+        return discType.preferredImageExtension
+    }
+}
+
+/// A physical read may produce a locally staged artifact that can be
+/// finalized after the changer has safely returned the disc.
+enum BatchImageArtifact {
+    case complete(URL)
+    case staged(StagedImageArtifact)
+}
+
+final class StagedImageArtifact {
+    let expectedFinalURL: URL
+    private let finalizeBlock: (ImagingService.ImagingControl?) throws -> URL
+    private let discardBlock: () -> Void
+
+    init(
+        expectedFinalURL: URL,
+        finalize: @escaping (ImagingService.ImagingControl?) throws -> URL,
+        discard: @escaping () -> Void
+    ) {
+        self.expectedFinalURL = expectedFinalURL
+        self.finalizeBlock = finalize
+        self.discardBlock = discard
+    }
+
+    func finalize(control: ImagingService.ImagingControl?) throws -> URL {
+        try finalizeBlock(control)
+    }
+
+    func discard() {
+        discardBlock()
+    }
+}
+
 protocol ImagingServicing: AnyObject {
     func estimateDiscSizeBytes(bsdName: String) -> Int64?
     func detectDiscType(bsdName: String) -> DiscType
@@ -45,6 +113,65 @@ protocol ImagingServicing: AnyObject {
         control: ImagingService.ImagingControl?,
         progress: @escaping (ImagingProgressInfo) -> Void
     ) throws -> URL
+    func createImage(
+        bsdName: String,
+        discType: DiscType,
+        outputMode: RipOutputMode,
+        outputPath: URL,
+        totalBytes: Int64?,
+        control: ImagingService.ImagingControl?,
+        progress: @escaping (ImagingProgressInfo) -> Void
+    ) throws -> URL
+    func createBatchImage(
+        bsdName: String,
+        discType: DiscType,
+        outputMode: RipOutputMode,
+        outputPath: URL,
+        totalBytes: Int64?,
+        control: ImagingService.ImagingControl?,
+        progress: @escaping (ImagingProgressInfo) -> Void
+    ) throws -> BatchImageArtifact
+}
+
+extension ImagingServicing {
+    func createImage(
+        bsdName: String,
+        discType: DiscType,
+        outputMode: RipOutputMode,
+        outputPath: URL,
+        totalBytes: Int64?,
+        control: ImagingService.ImagingControl?,
+        progress: @escaping (ImagingProgressInfo) -> Void
+    ) throws -> URL {
+        try createImage(
+            bsdName: bsdName,
+            discType: discType,
+            outputPath: outputPath,
+            totalBytes: totalBytes,
+            control: control,
+            progress: progress
+        )
+    }
+
+    func createBatchImage(
+        bsdName: String,
+        discType: DiscType,
+        outputMode: RipOutputMode,
+        outputPath: URL,
+        totalBytes: Int64?,
+        control: ImagingService.ImagingControl?,
+        progress: @escaping (ImagingProgressInfo) -> Void
+    ) throws -> BatchImageArtifact {
+        .complete(try createImage(
+            bsdName: bsdName,
+            discType: discType,
+            outputMode: outputMode,
+            outputPath: outputPath,
+            totalBytes: totalBytes,
+            control: control,
+            progress: progress
+        ))
+    }
 }
 
 final class ImagingService: ImagingServicing {
@@ -54,10 +181,16 @@ final class ImagingService: ImagingServicing {
     )
 
     final class ImagingControl {
+        private enum CancellationScope {
+            case none
+            case currentDisc
+            case all
+        }
+
         private let lock = NSLock()
         private var process: Process?
         private var paused = false
-        private var cancelled = false
+        private var cancellationScope: CancellationScope = .none
 
         var isPaused: Bool {
             lock.lock()
@@ -68,14 +201,24 @@ final class ImagingService: ImagingServicing {
         var isCancelled: Bool {
             lock.lock()
             defer { lock.unlock() }
-            return cancelled
+            return cancellationScope != .none
+        }
+
+        var isBatchCancelled: Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            return cancellationScope == .all
+        }
+
+        func checkCancellation() throws {
+            if isCancelled { throw ImagingError.cancelled }
         }
 
         func attach(process: Process?) {
             lock.lock()
             self.process = process
             let shouldPause = paused
-            let wasCancelled = cancelled
+            let wasCancelled = cancellationScope != .none
             lock.unlock()
 
             guard let process = process else { return }
@@ -99,17 +242,49 @@ final class ImagingService: ImagingServicing {
 
         func cancel() {
             lock.lock()
-            cancelled = true
+            cancellationScope = .all
+            let wasPaused = paused
+            paused = false
             let process = self.process
             lock.unlock()
 
+            if wasPaused, let process = process {
+                _ = kill(process.processIdentifier, SIGCONT)
+            }
             process?.terminate()
+        }
+
+        func cancelCurrentDisc() {
+            lock.lock()
+            if cancellationScope != .all {
+                cancellationScope = .currentDisc
+            }
+            let wasPaused = paused
+            paused = false
+            let process = self.process
+            lock.unlock()
+
+            if wasPaused, let process = process {
+                _ = kill(process.processIdentifier, SIGCONT)
+            }
+            process?.terminate()
+        }
+
+        /// Clears a disc-scoped cancellation after its partial output has
+        /// been removed and the disc is ready to be returned. A batch-scoped
+        /// cancellation is deliberately never consumed here.
+        func consumeCurrentDiscCancellation() -> Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            guard cancellationScope == .currentDisc else { return false }
+            cancellationScope = .none
+            return true
         }
 
         func reset() {
             lock.lock()
             paused = false
-            cancelled = false
+            cancellationScope = .none
             process = nil
             lock.unlock()
         }
@@ -623,6 +798,26 @@ final class ImagingService: ImagingServicing {
         control: ImagingControl? = nil,
         progress: @escaping (ImagingProgressInfo) -> Void
     ) throws -> URL {
+        try createImage(
+            bsdName: bsdName,
+            discType: discType,
+            outputMode: .automatic,
+            outputPath: outputPath,
+            totalBytes: totalBytes,
+            control: control,
+            progress: progress
+        )
+    }
+
+    func createImage(
+        bsdName: String,
+        discType: DiscType,
+        outputMode: RipOutputMode,
+        outputPath: URL,
+        totalBytes: Int64? = nil,
+        control: ImagingControl? = nil,
+        progress: @escaping (ImagingProgressInfo) -> Void
+    ) throws -> URL {
         switch discType {
         case .audioCDDA:
             return try createCDDAArchive(
@@ -638,7 +833,17 @@ final class ImagingService: ImagingServicing {
                 "Mixed-mode CD raw imaging is disabled on this Sony FireWire bridge because the raw-device open can lock the changer"
             )
 
-        case .dataCD, .dvd, .unknown:
+        case .dvd:
+            return try createDVDImage(
+                bsdName: bsdName,
+                outputMode: outputMode,
+                outputPath: outputPath,
+                totalBytes: totalBytes,
+                control: control,
+                progress: progress
+            )
+
+        case .dataCD, .unknown:
             return try createISOImage(
                 bsdName: bsdName,
                 outputPath: outputPath,
@@ -647,6 +852,153 @@ final class ImagingService: ImagingServicing {
                 progress: progress
             )
         }
+    }
+
+    func createBatchImage(
+        bsdName: String,
+        discType: DiscType,
+        outputMode: RipOutputMode,
+        outputPath: URL,
+        totalBytes: Int64?,
+        control: ImagingControl?,
+        progress: @escaping (ImagingProgressInfo) -> Void
+    ) throws -> BatchImageArtifact {
+        guard discType == .dvd else {
+            return .complete(try createImage(
+                bsdName: bsdName,
+                discType: discType,
+                outputMode: outputMode,
+                outputPath: outputPath,
+                totalBytes: totalBytes,
+                control: control,
+                progress: progress
+            ))
+        }
+
+        let dvdVideo = DVDVideoImagingService()
+        var dvdVideoFailure: Error?
+        if dvdVideo.isAvailable {
+            do {
+                let format: DVDVideoImagingService.OutputFormat = outputMode == .dvdFolder
+                    ? .dvdFolder
+                    : .iso
+                let staged = try dvdVideo.stage(
+                    bsdName: bsdName,
+                    outputPath: outputPath,
+                    volumeName: outputPath.lastPathComponent,
+                    format: format,
+                    totalBytes: totalBytes,
+                    control: control,
+                    progress: progress
+                )
+                return .staged(StagedImageArtifact(
+                    expectedFinalURL: staged.expectedFinalURL,
+                    finalize: { finalizationControl in
+                        try staged.finalize(control: finalizationControl)
+                    },
+                    discard: {
+                        staged.discard()
+                    }
+                ))
+            } catch ImagingError.cancelled {
+                throw ImagingError.cancelled
+            } catch {
+                // A plain data DVD cannot be mirrored through dvdbackup.
+                // Its block-image fallback still needs the physical disc.
+                dvdVideoFailure = error
+            }
+        }
+
+        do {
+            return .complete(try createISOImage(
+                bsdName: bsdName,
+                outputPath: outputPath,
+                totalBytes: totalBytes,
+                control: control,
+                progress: progress
+            ))
+        } catch ImagingError.cancelled {
+            throw ImagingError.cancelled
+        } catch {
+            throw combinedDVDError(dvdVideoFailure: dvdVideoFailure, fallbackError: error)
+        }
+    }
+
+    private func createDVDImage(
+        bsdName: String,
+        outputMode: RipOutputMode,
+        outputPath: URL,
+        totalBytes: Int64?,
+        control: ImagingControl?,
+        progress: @escaping (ImagingProgressInfo) -> Void
+    ) throws -> URL {
+        let dvdVideo = DVDVideoImagingService()
+        var dvdVideoFailure: Error?
+
+        if dvdVideo.isAvailable {
+            do {
+                if outputMode == .dvdFolder {
+                    return try dvdVideo.createDVDMediaFolder(
+                        bsdName: bsdName,
+                        outputPath: outputPath,
+                        volumeName: outputPath.lastPathComponent,
+                        totalBytes: totalBytes,
+                        control: control,
+                        progress: progress
+                    )
+                } else {
+                    return try dvdVideo.createISO(
+                        bsdName: bsdName,
+                        outputPath: outputPath,
+                        volumeName: outputPath.lastPathComponent,
+                        totalBytes: totalBytes,
+                        control: control,
+                        progress: progress
+                    )
+                }
+            } catch ImagingError.cancelled {
+                throw ImagingError.cancelled
+            } catch {
+                // A plain data DVD is not a DVD-Video title. Preserve support
+                // for it by falling through to Apple's block-image path.
+                dvdVideoFailure = error
+            }
+        }
+
+        do {
+            return try createISOImage(
+                bsdName: bsdName,
+                outputPath: outputPath,
+                totalBytes: totalBytes,
+                control: control,
+                progress: progress
+            )
+        } catch ImagingError.cancelled {
+            throw ImagingError.cancelled
+        } catch {
+            throw combinedDVDError(dvdVideoFailure: dvdVideoFailure, fallbackError: error)
+        }
+    }
+
+    private func combinedDVDError(dvdVideoFailure: Error?, fallbackError: Error) -> Error {
+        let message = fallbackError.localizedDescription
+        let permissionDenied = message.range(
+            of: "permission denied",
+            options: [.caseInsensitive, .diacriticInsensitive]
+        ) != nil
+        if let dvdVideoFailure = dvdVideoFailure {
+            return ImagingError.processFailed(
+                -1,
+                "CSS-aware DVD copy failed: \(dvdVideoFailure.localizedDescription). "
+                    + "The data-DVD fallback also failed: \(message)"
+            )
+        }
+        if permissionDenied {
+            return ImagingError.unsupportedDiscType(
+                "This appears to be a CSS-protected DVD-Video disc. Run Scripts/install-dvd-video-support.sh on the changer Mac, restart Discbot, and retry"
+            )
+        }
+        return fallbackError
     }
 }
 

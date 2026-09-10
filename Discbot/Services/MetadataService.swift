@@ -6,6 +6,7 @@
 //
 
 import Foundation
+import AppKit
 import CommonCrypto
 
 struct MetadataCandidate: Codable, Equatable {
@@ -56,12 +57,23 @@ final class MetadataService {
     private let mountService = MountService()
     private let session: URLSession
     private let defaults: UserDefaults
+    private let artworkDirectory: URL
     private static let musicBrainzRequestLock = NSLock()
     private static var lastMusicBrainzRequestAt = Date.distantPast
 
-    init(session: URLSession = .shared, defaults: UserDefaults = .standard) {
+    init(
+        session: URLSession = .shared,
+        defaults: UserDefaults = .standard,
+        artworkDirectory: URL? = nil
+    ) {
         self.session = session
         self.defaults = defaults
+        self.artworkDirectory = artworkDirectory ?? FileManager.default.urls(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask
+        ).first!
+            .appendingPathComponent("Discbot", isDirectory: true)
+            .appendingPathComponent("Artwork", isDirectory: true)
     }
 
     var audioProvider: MetadataProvider {
@@ -104,16 +116,16 @@ final class MetadataService {
         switch discType {
         case .audioCDDA where audioProvider == .musicBrainz,
              .mixedModeCD where audioProvider == .musicBrainz:
-            return musicBrainzCandidates(discID: musicBrainzDiscID(bsdName: bsdName)).first?.discMetadata
+            return Self.unambiguousAudioCandidate(
+                musicBrainzCandidates(discID: musicBrainzDiscID(bsdName: bsdName))
+            )?.discMetadata
         case .dvd where videoProvider == .tmdb:
             guard !tmdbReadAccessToken.isEmpty,
                   let query = cleanedSearchTitle(volumeLabel), !query.isEmpty else { return nil }
             let candidates = tmdbCandidates(query: query)
             // DVD volume labels are noisy. Auto-apply only an exact normalized
             // title match; otherwise leave the candidates for user selection.
-            return candidates.first(where: {
-                normalizedTitle($0.title) == normalizedTitle(query)
-            })?.discMetadata
+            return Self.unambiguousVideoCandidate(candidates, query: query)?.discMetadata
         default:
             return nil
         }
@@ -125,6 +137,21 @@ final class MetadataService {
         case .tmdb: return tmdbCandidates(query: query)
         case .none: return []
         }
+    }
+
+    /// Automatic matching must never silently choose among multiple editions
+    /// or similarly named films. Ambiguous results remain available to the UI.
+    static func unambiguousAudioCandidate(_ candidates: [MetadataCandidate]) -> MetadataCandidate? {
+        candidates.count == 1 ? candidates[0] : nil
+    }
+
+    static func unambiguousVideoCandidate(
+        _ candidates: [MetadataCandidate],
+        query: String
+    ) -> MetadataCandidate? {
+        let normalizedQuery = normalizeTitle(query)
+        let exact = candidates.filter { normalizeTitle($0.title) == normalizedQuery }
+        return exact.count == 1 ? exact[0] : nil
     }
 
     // MARK: - MusicBrainz / Cover Art Archive
@@ -305,16 +332,49 @@ final class MetadataService {
         let data = try JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys])
         try data.write(to: sidecarURL, options: .atomic)
 
-        if let rawURL = disc.artworkURL,
-           let url = URL(string: rawURL),
-           isApprovedArtworkURL(url) {
-            let artworkURL = ripURL.deletingPathExtension().appendingPathExtension("cover.jpg")
-            if let data = requestData(URLRequest(url: url)), !data.isEmpty {
-                // Artwork is useful but optional; a CDN outage must not turn a
-                // verified disc image into a failed rip.
-                try? data.write(to: artworkURL, options: .atomic)
-            }
+        let destination = ripURL.deletingPathExtension().appendingPathExtension("cover.jpg")
+        if let data = artworkData(path: disc.artworkPath) {
+            try? data.write(to: destination, options: .atomic)
+        } else if let rawURL = disc.artworkURL,
+                  let url = URL(string: rawURL),
+                  isApprovedArtworkURL(url),
+                  let data = requestData(URLRequest(url: url)),
+                  let jpeg = normalizedJPEGData(data) {
+            // Artwork is useful but optional; a CDN outage must not turn a
+            // verified disc image into a failed rip.
+            try? jpeg.write(to: destination, options: .atomic)
         }
+    }
+
+    // MARK: - Durable artwork
+
+    func cacheArtwork(discID: Int64, rawURL: String?) -> String? {
+        guard let rawURL = rawURL,
+              let url = URL(string: rawURL),
+              isApprovedArtworkURL(url),
+              let data = requestData(URLRequest(url: url)) else { return nil }
+        return cacheArtwork(discID: discID, data: data)
+    }
+
+    func cacheArtwork(discID: Int64, data: Data) -> String? {
+        guard let jpeg = normalizedJPEGData(data) else { return nil }
+        do {
+            try FileManager.default.createDirectory(
+                at: artworkDirectory,
+                withIntermediateDirectories: true
+            )
+            let destination = artworkDirectory.appendingPathComponent("\(discID).jpg")
+            try jpeg.write(to: destination, options: .atomic)
+            return destination.path
+        } catch {
+            print("MetadataService: Could not cache artwork for disc \(discID): \(error.localizedDescription)")
+            return nil
+        }
+    }
+
+    func artworkData(path: String?) -> Data? {
+        guard let path = path, FileManager.default.fileExists(atPath: path) else { return nil }
+        return try? Data(contentsOf: URL(fileURLWithPath: path), options: .mappedIfSafe)
     }
 
     // MARK: - MusicBrainz disc ID
@@ -347,12 +407,18 @@ final class MetadataService {
         var request = request
         request.timeoutInterval = 20
         let semaphore = DispatchSemaphore(value: 0)
+        let lock = NSLock()
         var result: Data?
-        session.dataTask(with: request) { data, response, _ in
+        let task = session.dataTask(with: request) { data, response, _ in
+            lock.lock()
             if let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) { result = data }
+            lock.unlock()
             semaphore.signal()
-        }.resume()
-        _ = semaphore.wait(timeout: .now() + 25)
+        }
+        task.resume()
+        if semaphore.wait(timeout: .now() + 25) == .timedOut { task.cancel() }
+        lock.lock()
+        defer { lock.unlock() }
         return result
     }
 
@@ -373,12 +439,24 @@ final class MetadataService {
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    private func normalizedTitle(_ value: String) -> String {
+    private static func normalizeTitle(_ value: String) -> String {
         value.lowercased().components(separatedBy: CharacterSet.alphanumerics.inverted).joined()
     }
 
     private func isApprovedArtworkURL(_ url: URL) -> Bool {
         guard url.scheme?.lowercased() == "https", let host = url.host?.lowercased() else { return false }
         return host == "coverartarchive.org" || host == "image.tmdb.org"
+    }
+
+    private func normalizedJPEGData(_ data: Data) -> Data? {
+        // Bound memory use before handing untrusted provider data to ImageIO.
+        guard !data.isEmpty, data.count <= 12 * 1_024 * 1_024,
+              let image = NSImage(data: data),
+              let tiff = image.tiffRepresentation,
+              let representation = NSBitmapImageRep(data: tiff) else { return nil }
+        return representation.representation(
+            using: .jpeg,
+            properties: [.compressionFactor: 0.88]
+        )
     }
 }

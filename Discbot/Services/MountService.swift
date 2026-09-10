@@ -34,6 +34,7 @@ protocol MountServicing: AnyObject {
     func waitForDisc(timeout: TimeInterval) throws -> String
     func findDiscBSDName() -> String?
     func isDiscPresent() -> Bool
+    func isOpticalDriveAvailable() -> Bool
     func mountDisc(bsdName: String, timeout: Int) throws -> String
     func mountAudioDisc(bsdName: String, timeout: Int) throws -> String
     func unmountDisc(bsdName: String, force: Bool) throws
@@ -118,6 +119,13 @@ final class MountService {
     /// Check if disc is present
     func isDiscPresent() -> Bool {
         return mount_is_disc_present()
+    }
+
+    /// The changer and optical drive are separate SCSI LUNs. The changer can
+    /// remain online after Catalina drops the optical LUN, so test it directly
+    /// before moving any media.
+    func isOpticalDriveAvailable() -> Bool {
+        mount_is_optical_drive_available()
     }
 
     /// Mount a disc by BSD name (blocking)
@@ -445,6 +453,7 @@ extension MountService: MountServicing {}
 /// In-memory mount service used when mocking the changer.
 final class MockMountService: MountServicing {
     private let state: MockChangerState
+    var opticalDriveAvailable = true
 
     init(state: MockChangerState) {
         self.state = state
@@ -468,6 +477,8 @@ final class MockMountService: MountServicing {
     func isDiscPresent() -> Bool {
         state.snapshotDrive().hasDisc
     }
+
+    func isOpticalDriveAvailable() -> Bool { opticalDriveAvailable }
 
     func mountDisc(bsdName: String, timeout: Int = 30) throws -> String {
         guard state.snapshotDrive().bsdName == bsdName else {

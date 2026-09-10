@@ -7,6 +7,7 @@
 
 import Foundation
 import CommonCrypto
+import Darwin
 
 struct DiscIdentity: Equatable {
     let fingerprint: String
@@ -26,6 +27,13 @@ protocol DiscIdentifying: AnyObject {
 
 final class DiscIdentityService: DiscIdentifying {
     private let sampleSize = 64 * 1024
+    private let devicePaths: (String) -> [String]
+
+    init(devicePaths: @escaping (String) -> [String] = { bsdName in
+        ["/dev/r\(bsdName)", "/dev/\(bsdName)"]
+    }) {
+        self.devicePaths = devicePaths
+    }
 
     func identify(
         bsdName: String,
@@ -50,7 +58,9 @@ final class DiscIdentityService: DiscIdentifying {
             discType: discType,
             sizeBytes: sizeBytes
         ) {
-            return DiscIdentity(fingerprint: sampled, kind: "sampled-content-v1", confidence: 2)
+            // Sampling correlates candidates; different discs can differ only
+            // outside these regions. It cannot authorize skipping or deletion.
+            return DiscIdentity(fingerprint: sampled, kind: "sampled-content-v1", confidence: 1)
         }
 
         if let stableIdentifier = stableMediaIdentifier(bsdName: bsdName) {
@@ -71,17 +81,12 @@ final class DiscIdentityService: DiscIdentifying {
     ) -> String? {
         guard let sizeBytes = sizeBytes, sizeBytes > Int64(sampleSize) else { return nil }
 
-        let rawURL = URL(fileURLWithPath: "/dev/r\(bsdName)")
-        let blockURL = URL(fileURLWithPath: "/dev/\(bsdName)")
-        let handle: FileHandle
-        if let rawHandle = try? FileHandle(forReadingFrom: rawURL) {
-            handle = rawHandle
-        } else if let blockHandle = try? FileHandle(forReadingFrom: blockURL) {
-            handle = blockHandle
-        } else {
-            return nil
+        var descriptor: Int32 = -1
+        for path in devicePaths(bsdName) where descriptor < 0 {
+            descriptor = path.withCString { Darwin.open($0, O_RDONLY) }
         }
-        defer { handle.closeFile() }
+        guard descriptor >= 0 else { return nil }
+        defer { _ = Darwin.close(descriptor) }
 
         var context = CC_SHA256_CTX()
         CC_SHA256_Init(&context)
@@ -92,9 +97,11 @@ final class DiscIdentityService: DiscIdentifying {
         let offsets = Array(Set(rawOffsets.map { max(0, min($0, lastStart)) / 2048 * 2048 })).sorted()
 
         for offset in offsets {
-            handle.seek(toFileOffset: UInt64(offset))
-            let data = handle.readData(ofLength: sampleSize)
-            guard !data.isEmpty else { return nil }
+            guard let data = readSample(
+                descriptor: descriptor,
+                offset: offset,
+                length: sampleSize
+            ), !data.isEmpty else { return nil }
             updateHash(&context, data: Data("|\(offset)|\(data.count)|".utf8))
             updateHash(&context, data: data)
         }
@@ -102,6 +109,38 @@ final class DiscIdentityService: DiscIdentifying {
         var digest = [UInt8](repeating: 0, count: Int(CC_SHA256_DIGEST_LENGTH))
         CC_SHA256_Final(&digest, &context)
         return digest.map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// Foundation's FileHandle converts some device read failures into an
+    /// Objective-C exception, which Swift cannot catch. POSIX pread reports
+    /// permission and media errors through errno so identity can safely fall
+    /// back to the device UUID or conservative metadata fingerprint.
+    private func readSample(descriptor: Int32, offset: Int64, length: Int) -> Data? {
+        var bytes = [UInt8](repeating: 0, count: length)
+        var totalRead = 0
+
+        while totalRead < length {
+            let count: Int = bytes.withUnsafeMutableBytes { buffer in
+                guard let baseAddress = buffer.baseAddress else { return -1 }
+                return Darwin.pread(
+                    descriptor,
+                    baseAddress.advanced(by: totalRead),
+                    length - totalRead,
+                    off_t(offset) + off_t(totalRead)
+                )
+            }
+
+            if count > 0 {
+                totalRead += count
+            } else if count == 0 {
+                break
+            } else if errno != EINTR {
+                return nil
+            }
+        }
+
+        guard totalRead > 0 else { return nil }
+        return Data(bytes.prefix(totalRead))
     }
 
     private func stableMediaIdentifier(bsdName: String) -> String? {

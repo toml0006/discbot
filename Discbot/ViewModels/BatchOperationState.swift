@@ -27,6 +27,7 @@ final class BatchOperationState: ObservableObject {
     @Published var completedSlots: [Int] = []
     @Published var failedSlots: [(slot: Int, error: String)] = []
     @Published var skippedSlots: [(slot: Int, existingPath: String)] = []
+    @Published var cancelledSlots: [Int] = []
     @Published var replacedSlots: [Int] = []
     @Published var haltReason: String?
 
@@ -42,8 +43,14 @@ final class BatchOperationState: ObservableObject {
     @Published var overallEstimatedTotalBytes: Int64?
     @Published var overallETASeconds: TimeInterval?
     @Published var averageDiscOperationSeconds: TimeInterval?
+    @Published var canCancelCurrentDisc = false
+    @Published var finalizingDiscCount = 0
+
+    private var smoothedImagingSpeedBytesPerSecond: Double?
 
     private let imagingControl = ImagingService.ImagingControl()
+    private let finalizationControlLock = NSLock()
+    private var finalizationControls: [ObjectIdentifier: ImagingService.ImagingControl] = [:]
     private static let log = OSLog(
         subsystem: Bundle.main.bundleIdentifier ?? "Discbot",
         category: "BatchOperation"
@@ -51,7 +58,8 @@ final class BatchOperationState: ObservableObject {
 
     var progress: Double {
         guard totalCount > 0 else { return 0 }
-        return min(1.0, max(0.0, (Double(currentIndex) + imagingProgress) / Double(totalCount)))
+        let value = min(1.0, max(0.0, (Double(currentIndex) + imagingProgress) / Double(totalCount)))
+        return finalizingDiscCount > 0 ? min(value, 0.99) : value
     }
 
     var isComplete: Bool {
@@ -61,7 +69,25 @@ final class BatchOperationState: ObservableObject {
     func cancel() {
         isCancelled = true
         isPaused = false
+        canCancelCurrentDisc = false
+        statusText = currentSlot > 0
+            ? "Cancelling batch; returning slot \(currentSlot) safely..."
+            : "Cancelling batch safely..."
         imagingControl.cancel()
+        cancelFinalizations()
+    }
+
+    @discardableResult
+    func cancelCurrentDisc() -> Bool {
+        guard case .imageAll = operationType,
+              isRunning,
+              canCancelCurrentDisc,
+              currentSlot > 0 else { return false }
+        canCancelCurrentDisc = false
+        isPaused = false
+        statusText = "Cancelling this rip; returning slot \(currentSlot) safely..."
+        imagingControl.cancelCurrentDisc()
+        return true
     }
 
     func pauseImaging() {
@@ -90,6 +116,7 @@ final class BatchOperationState: ObservableObject {
         completedSlots = []
         failedSlots = []
         skippedSlots = []
+        cancelledSlots = []
         replacedSlots = []
         haltReason = nil
         currentDiscMetadata = nil
@@ -103,7 +130,32 @@ final class BatchOperationState: ObservableObject {
         overallEstimatedTotalBytes = nil
         overallETASeconds = nil
         averageDiscOperationSeconds = nil
+        canCancelCurrentDisc = false
+        finalizingDiscCount = 0
+        smoothedImagingSpeedBytesPerSecond = nil
         imagingControl.reset()
+        cancelFinalizations()
+    }
+
+    private func registerFinalizationControl(_ control: ImagingService.ImagingControl) {
+        finalizationControlLock.lock()
+        finalizationControls[ObjectIdentifier(control)] = control
+        let shouldCancel = imagingControl.isBatchCancelled
+        finalizationControlLock.unlock()
+        if shouldCancel { control.cancel() }
+    }
+
+    private func unregisterFinalizationControl(_ control: ImagingService.ImagingControl) {
+        finalizationControlLock.lock()
+        finalizationControls.removeValue(forKey: ObjectIdentifier(control))
+        finalizationControlLock.unlock()
+    }
+
+    private func cancelFinalizations() {
+        finalizationControlLock.lock()
+        let controls = Array(finalizationControls.values)
+        finalizationControlLock.unlock()
+        controls.forEach { $0.cancel() }
     }
 
     private func mountDiscIfAvailable(
@@ -177,6 +229,7 @@ final class BatchOperationState: ObservableObject {
         completedSlots = []
         failedSlots = []
         skippedSlots = []
+        cancelledSlots = []
         replacedSlots = []
         haltReason = nil
 
@@ -296,6 +349,7 @@ final class BatchOperationState: ObservableObject {
             self?.completedSlots = []
             self?.failedSlots = []
             self?.skippedSlots = []
+            self?.cancelledSlots = []
             self?.haltReason = nil
             self?.imagingProgress = 0
             self?.currentDiscTransferredBytes = 0
@@ -603,6 +657,7 @@ final class BatchOperationState: ObservableObject {
         slots: [Slot],
         outputDirectory: URL,
         duplicatePolicy: DuplicatePolicy,
+        outputMode: RipOutputMode = .automatic,
         driveFallbackSourceSlot: Int?,
         ignoreUntrackedDriveFull: Bool = false,
         changerService: ChangerServicing,
@@ -626,6 +681,7 @@ final class BatchOperationState: ObservableObject {
         completedSlots = []
         failedSlots = []
         skippedSlots = []
+        cancelledSlots = []
         replacedSlots = []
         haltReason = nil
         imagingProgress = 0
@@ -636,7 +692,14 @@ final class BatchOperationState: ObservableObject {
         overallTransferredBytes = 0
         overallEstimatedTotalBytes = nil
         overallETASeconds = nil
+        canCancelCurrentDisc = false
+        finalizingDiscCount = 0
+        smoothedImagingSpeedBytesPerSecond = nil
         imagingControl.reset()
+        catalogService.recordActivity(
+            type: "batch_started",
+            message: "Started batch for \(occupiedSlots.count) disc(s) to \(outputDirectory.path) using \(duplicatePolicy.displayName.lowercased()) and \(outputMode.displayName.lowercased())."
+        )
         onUpdate()
 
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
@@ -644,8 +707,19 @@ final class BatchOperationState: ObservableObject {
             var completedBytes: Int64 = 0
             var knownDiscSizes: [Int64] = []
             var processedCount = 0
+            let finalizationQueue = OperationQueue()
+            finalizationQueue.name = "discbot.batch.finalization"
+            finalizationQueue.qualityOfService = .utility
+            finalizationQueue.maxConcurrentOperationCount = 1
+            // One disc may finalize while one more is read or queued.
+            let stagingSlots = DispatchSemaphore(value: 2)
+            let finalizationGroup = DispatchGroup()
+            var pendingByDiscID: [Int64: DispatchGroup] = [:]
 
             do {
+                guard mountService.isOpticalDriveAvailable() else {
+                    throw ChangerError.opticalDriveUnavailable
+                }
                 let drive = try changerService.getDriveStatus()
                 let opticalMediaPresent = mountService.isDiscPresent()
                 let reconciledEmpty = ignoreUntrackedDriveFull
@@ -665,8 +739,12 @@ final class BatchOperationState: ObservableObject {
                 }
             } catch {
                 self.logFailure("prepare drive for batch", error: error)
+                catalogService.recordActivity(
+                    type: "batch_failed",
+                    message: "Batch stopped before moving media: \(error.localizedDescription)"
+                )
                 DispatchQueue.main.async {
-                    self.haltReason = "Could not clear the drive before starting: \(error.localizedDescription)"
+                    self.haltReason = "Batch could not start: \(error.localizedDescription)"
                     self.statusText = self.haltReason ?? "Batch stopped"
                     self.failedSlots.append((0, self.statusText))
                     self.isRunning = false
@@ -677,22 +755,45 @@ final class BatchOperationState: ObservableObject {
             }
 
             for slot in occupiedSlots {
-                if self.imagingControl.isCancelled { break }
+                if self.imagingControl.isBatchCancelled { break }
+
+                if stagingSlots.wait(timeout: .now()) == .timedOut {
+                    DispatchQueue.main.async {
+                        self.statusText = "Waiting for saved DVDs to finish..."
+                        self.canCancelCurrentDisc = false
+                        onUpdate()
+                    }
+                    while stagingSlots.wait(timeout: .now() + 0.1) == .timedOut {
+                        if self.imagingControl.isBatchCancelled { break }
+                    }
+                    if self.imagingControl.isBatchCancelled { break }
+                }
+                var handedOffToFinalization = false
+                defer { if !handedOffToFinalization { stagingSlots.signal() } }
+                if self.imagingControl.isBatchCancelled { break }
 
                 var loaded = false
                 var bsdName: String?
                 var ripId: Int64?
                 var ripCompleted = false
+                var createdFinalURL: URL?
                 var processingError: Error?
                 var skippedPath: String?
                 var completedThisDisc = false
                 var replacedThisDisc = false
+                var cancelledThisDisc = false
+                var stagedArtifact: StagedImageArtifact?
+                var stagedDisc: DiscRecord?
+                var stagedExistingRip: BackupRecord?
+                var stagedDiscGroup: DispatchGroup?
 
                 DispatchQueue.main.async {
                     self.currentSlot = slot.id
                     self.statusText = "Loading slot \(slot.id)..."
                     self.imagingProgress = 0
                     self.currentDiscName = nil
+                    self.canCancelCurrentDisc = false
+                    self.smoothedImagingSpeedBytesPerSecond = nil
                     onUpdate()
                 }
 
@@ -732,9 +833,25 @@ final class BatchOperationState: ObservableObject {
                         self.statusText = "Checking previous rip integrity..."
                         onUpdate()
                     }
-                    let existingRip = duplicatePolicy == .replaceExisting
-                        ? catalogService.latestRipForReplacement(disc: disc)
-                        : catalogService.latestVerifiedRip(disc: disc)
+                    if duplicatePolicy != .imageAgain,
+                       let discID = disc.id,
+                       let pending = pendingByDiscID[discID] {
+                        while pending.wait(timeout: .now() + 0.1) == .timedOut {
+                            try self.imagingControl.checkCancellation()
+                        }
+                    }
+                    try self.imagingControl.checkCancellation()
+                    let existingRip: BackupRecord?
+                    switch duplicatePolicy {
+                    case .skipExisting:
+                        existingRip = try catalogService.existingRipForAutomaticSkip(
+                            disc: disc, control: self.imagingControl
+                        )
+                    case .replaceExisting:
+                        existingRip = catalogService.latestRipForReplacement(disc: disc)
+                    case .imageAgain:
+                        existingRip = nil
+                    }
                     if duplicatePolicy == .skipExisting,
                        let existing = existingRip {
                         skippedPath = existing.backupPath
@@ -753,7 +870,7 @@ final class BatchOperationState: ObservableObject {
                         guard let startedRipId = catalogService.startRip(
                             disc: disc,
                             slotId: slot.id,
-                            proposedPath: outputBase.appendingPathExtension(discType.preferredImageExtension)
+                            proposedPath: outputBase.appendingPathExtension(outputMode.preferredExtension(for: discType))
                         ) else {
                             throw ChangerError.imagingFailed("Could not create a rip history record")
                         }
@@ -766,6 +883,7 @@ final class BatchOperationState: ObservableObject {
                             self.currentDiscTotalBytes = estimatedSize
                             self.currentDiscSpeedBytesPerSecond = 0
                             self.currentDiscETASeconds = nil
+                            self.canCancelCurrentDisc = true
                             onUpdate()
                         }
 
@@ -775,34 +893,47 @@ final class BatchOperationState: ObservableObject {
                             try mountService.unmountDisc(bsdName: detectedBSDName, force: true)
                         }
 
-                        let finalURL = try imagingService.createImage(
+                        let artifact = try imagingService.createBatchImage(
                             bsdName: detectedBSDName,
                             discType: discType,
+                            outputMode: outputMode,
                             outputPath: outputBase,
                             totalBytes: estimatedSize,
                             control: self.imagingControl,
                             progress: { progress in
                                 DispatchQueue.main.async {
-                                    self.imagingProgress = progress.fractionCompleted
-                                    self.currentDiscTransferredBytes = progress.bytesTransferred
+                                    let stableFraction = max(self.imagingProgress, progress.fractionCompleted)
+                                    let stableBytes = max(self.currentDiscTransferredBytes, progress.bytesTransferred)
+                                    self.imagingProgress = stableFraction
+                                    self.currentDiscTransferredBytes = stableBytes
                                     self.currentDiscTotalBytes = progress.totalBytes
-                                    self.currentDiscSpeedBytesPerSecond = progress.speedBytesPerSecond ?? 0
-                                    self.currentDiscETASeconds = progress.etaSeconds
+                                    if let speed = progress.speedBytesPerSecond, speed > 0 {
+                                        let smoothed = self.smoothedImagingSpeedBytesPerSecond.map {
+                                            ($0 * 0.85) + (speed * 0.15)
+                                        } ?? speed
+                                        self.smoothedImagingSpeedBytesPerSecond = smoothed
+                                        self.currentDiscSpeedBytesPerSecond = smoothed
+                                        if let total = progress.totalBytes {
+                                            self.currentDiscETASeconds = max(Double(total - stableBytes) / smoothed, 0)
+                                        } else {
+                                            self.currentDiscETASeconds = progress.etaSeconds
+                                        }
+                                    }
 
                                     let remaining = max(occupiedSlots.count - processedCount - 1, 0)
                                     let averageSize = knownDiscSizes.isEmpty ? nil : knownDiscSizes.reduce(0, +) / Int64(knownDiscSizes.count)
                                     let estimatedRemaining = averageSize.map { $0 * Int64(remaining) } ?? 0
                                     let totalEstimate = estimatedSize.map { completedBytes + $0 + estimatedRemaining }
-                                    let transferred = completedBytes + progress.bytesTransferred
+                                    let transferred = completedBytes + stableBytes
                                     self.overallTransferredBytes = transferred
                                     self.overallEstimatedTotalBytes = totalEstimate
                                     if let totalEstimate = totalEstimate,
-                                       let speed = progress.speedBytesPerSecond, speed > 0 {
+                                       let speed = self.smoothedImagingSpeedBytesPerSecond, speed > 0 {
                                         self.overallETASeconds = max(Double(totalEstimate - transferred) / speed, 0)
                                     } else {
                                         self.overallETASeconds = nil
                                     }
-                                    let percent = Int(progress.fractionCompleted * 100)
+                                    let percent = Int(stableFraction * 100)
                                     self.statusText = self.isPaused
                                         ? "Imaging \(disc.displayName)... paused at \(percent)%"
                                         : "Imaging \(disc.displayName)... \(percent)%"
@@ -811,30 +942,68 @@ final class BatchOperationState: ObservableObject {
                             }
                         )
 
-                        guard FileManager.default.fileExists(atPath: finalURL.path) else {
-                            throw ImagingError.writeFailed(finalURL)
+                        DispatchQueue.main.async {
+                            self.canCancelCurrentDisc = false
+                            self.statusText = "Preparing to return \(disc.displayName)..."
+                            onUpdate()
                         }
-                        let attributes = try FileManager.default.attributesOfItem(atPath: finalURL.path)
-                        guard let finalSize = attributes[.size] as? NSNumber, finalSize.int64Value > 0 else {
-                            throw ImagingError.writeFailed(finalURL)
+
+                        switch artifact {
+                        case .complete(let finalURL):
+                            createdFinalURL = finalURL
+                            guard FileManager.default.fileExists(atPath: finalURL.path) else {
+                                throw ImagingError.writeFailed(finalURL)
+                            }
+                            let finalSize = try RipArtifactInspector.sizeBytes(at: finalURL)
+                            guard finalSize > 0 else {
+                                throw ImagingError.writeFailed(finalURL)
+                            }
+                            try catalogService.recordRipCompleted(
+                                ripId: startedRipId,
+                                finalURL: finalURL,
+                                disc: disc,
+                                control: self.imagingControl
+                            )
+                            ripCompleted = true
+                            completedThisDisc = true
+                            if duplicatePolicy == .replaceExisting, let existing = existingRip {
+                                try catalogService.supersede(existing, with: finalURL)
+                                replacedThisDisc = true
+                            }
+                            completedBytes += estimatedSize ?? finalSize
+
+                        case .staged(let pending):
+                            stagedArtifact = pending
+                            stagedDisc = disc
+                            stagedExistingRip = existingRip
+                            let discGroup = DispatchGroup()
+                            discGroup.enter()
+                            stagedDiscGroup = discGroup
+                            if let discID = disc.id {
+                                pendingByDiscID[discID] = discGroup
+                            }
+                            completedBytes += estimatedSize ?? 0
                         }
-                        try catalogService.recordRipCompleted(ripId: startedRipId, finalURL: finalURL, disc: disc)
-                        if duplicatePolicy == .replaceExisting, let existing = existingRip {
-                            try catalogService.supersede(existing, with: finalURL)
-                            replacedThisDisc = true
-                        }
-                        ripCompleted = true
-                        completedThisDisc = true
-                        completedBytes += estimatedSize ?? finalSize.int64Value
                     }
                 } catch {
                     processingError = error
+                    cancelledThisDisc = self.imagingControl.consumeCurrentDiscCancellation()
+                    if !ripCompleted, let finalURL = createdFinalURL,
+                       cancelledThisDisc || self.imagingControl.isBatchCancelled {
+                        catalogService.discardUncommittedImage(at: finalURL)
+                    }
                     self.logFailure("batch image", slot: slot.id, error: error)
                     if let ripId = ripId, !ripCompleted {
                         catalogService.recordRipFailed(
                             ripId: ripId,
                             error: error.localizedDescription,
-                            cancelled: self.imagingControl.isCancelled
+                            cancelled: cancelledThisDisc || self.imagingControl.isBatchCancelled
+                        )
+                    } else {
+                        catalogService.recordActivity(
+                            type: (cancelledThisDisc || self.imagingControl.isBatchCancelled) ? "cancelled" : "failed",
+                            slotId: slot.id,
+                            message: "Failed before imaging began: \(error.localizedDescription)"
                         )
                     }
                 }
@@ -853,15 +1022,111 @@ final class BatchOperationState: ObservableObject {
                     } catch {
                         cleanupError = error
                         self.logFailure("return disc after batch item", slot: slot.id, error: error)
+                        catalogService.recordActivity(
+                            type: "recovery_failed",
+                            slotId: slot.id,
+                            message: "Could not safely return the disc: \(error.localizedDescription)"
+                        )
+                    }
+                }
+
+                if let artifact = stagedArtifact,
+                   let stagedDisc = stagedDisc,
+                   let stagedRipID = ripId {
+                    let existingRipForFinalization = stagedExistingRip
+                    let discGroupForFinalization = stagedDiscGroup
+                    let finalizingSlotID = slot.id
+                    finalizationGroup.enter()
+                    DispatchQueue.main.async {
+                        self.finalizingDiscCount += 1
+                        onUpdate()
+                    }
+                    handedOffToFinalization = true
+                    finalizationQueue.addOperation { [weak self] in
+                        defer { stagingSlots.signal() }
+                        guard let self = self else {
+                            artifact.discard()
+                            discGroupForFinalization?.leave()
+                            finalizationGroup.leave()
+                            return
+                        }
+
+                        let finalizationControl = ImagingService.ImagingControl()
+                        self.registerFinalizationControl(finalizationControl)
+                        var finalizationError: Error?
+                        var didReplace = false
+                        var didComplete = false
+                        var finalizedURL: URL?
+
+                        do {
+                            if self.imagingControl.isBatchCancelled {
+                                artifact.discard()
+                                throw ImagingError.cancelled
+                            }
+                            let finalURL = try artifact.finalize(control: finalizationControl)
+                            finalizedURL = finalURL
+                            let finalSize = try RipArtifactInspector.sizeBytes(at: finalURL)
+                            guard finalSize > 0 else {
+                                throw ImagingError.writeFailed(finalURL)
+                            }
+                            try catalogService.recordRipCompleted(
+                                ripId: stagedRipID,
+                                finalURL: finalURL,
+                                disc: stagedDisc,
+                                control: finalizationControl
+                            )
+                            didComplete = true
+                            if duplicatePolicy == .replaceExisting,
+                               let existing = existingRipForFinalization {
+                                try catalogService.supersede(existing, with: finalURL)
+                                didReplace = true
+                            }
+                        } catch {
+                            finalizationError = error
+                            let cancelled = self.imagingControl.isBatchCancelled
+                                || finalizationControl.isCancelled
+                            if !didComplete {
+                                if cancelled, let finalURL = finalizedURL {
+                                    catalogService.discardUncommittedImage(at: finalURL)
+                                }
+                                catalogService.recordRipFailed(
+                                    ripId: stagedRipID,
+                                    error: error.localizedDescription,
+                                    cancelled: cancelled
+                                )
+                            }
+                            self.logFailure("finalize staged image", slot: finalizingSlotID, error: error)
+                        }
+
+                        self.unregisterFinalizationControl(finalizationControl)
+                        let wasCancelled = self.imagingControl.isBatchCancelled
+                            || finalizationControl.isCancelled
+                        DispatchQueue.main.async {
+                            self.finalizingDiscCount = max(self.finalizingDiscCount - 1, 0)
+                            if didComplete {
+                                self.completedSlots.append(finalizingSlotID)
+                                if didReplace { self.replacedSlots.append(finalizingSlotID) }
+                            } else if wasCancelled {
+                                self.cancelledSlots.append(finalizingSlotID)
+                            } else if let error = finalizationError {
+                                self.failedSlots.append((finalizingSlotID, error.localizedDescription))
+                            }
+                            onUpdate()
+                        }
+                        discGroupForFinalization?.leave()
+                        finalizationGroup.leave()
                     }
                 }
 
                 processedCount += 1
                 DispatchQueue.main.async {
+                    self.canCancelCurrentDisc = false
                     if completedThisDisc { self.completedSlots.append(slot.id) }
                     if replacedThisDisc { self.replacedSlots.append(slot.id) }
                     if let path = skippedPath { self.skippedSlots.append((slot.id, path)) }
-                    if !self.imagingControl.isCancelled,
+                    if cancelledThisDisc { self.cancelledSlots.append(slot.id) }
+                    if !cancelledThisDisc,
+                       !self.imagingControl.isBatchCancelled,
                        let processingError = processingError {
                         var message = processingError.localizedDescription
                         if let cleanupError = cleanupError {
@@ -885,20 +1150,36 @@ final class BatchOperationState: ObservableObject {
                     onUpdate()
                 }
 
-                if cleanupError != nil || self.imagingControl.isCancelled { break }
+                if cleanupError != nil || self.imagingControl.isBatchCancelled { break }
             }
+
+            if finalizationQueue.operationCount > 0 {
+                let remainingFinalizations = finalizationQueue.operationCount
+                DispatchQueue.main.async {
+                    self.currentDiscName = nil
+                    self.canCancelCurrentDisc = false
+                    self.statusText = "Finalizing \(remainingFinalizations) saved DVD(s)..."
+                    onUpdate()
+                }
+            }
+            finalizationGroup.wait()
 
             DispatchQueue.main.async {
                 self.isRunning = false
                 self.isPaused = false
+                self.canCancelCurrentDisc = false
                 if self.imagingControl.isCancelled {
                     self.isCancelled = true
                     self.statusText = "Cancelled safely after \(processedCount) disc(s)"
                 } else if let reason = self.haltReason {
                     self.statusText = reason
                 } else {
-                    self.statusText = "Complete: \(self.completedSlots.count) imaged, \(self.skippedSlots.count) skipped, \(self.failedSlots.count) failed"
+                    self.statusText = "Complete: \(self.completedSlots.count) imaged, \(self.skippedSlots.count) skipped, \(self.cancelledSlots.count) cancelled, \(self.failedSlots.count) failed"
                 }
+                catalogService.recordActivity(
+                    type: self.isCancelled ? "batch_cancelled" : (self.failedSlots.isEmpty ? "batch_completed" : "batch_completed_with_errors"),
+                    message: self.statusText
+                )
                 onUpdate()
                 onComplete()
             }
@@ -964,6 +1245,7 @@ final class BatchOperationState: ObservableObject {
         completedSlots = []
         failedSlots = []
         skippedSlots = []
+        cancelledSlots = []
         replacedSlots = []
         haltReason = nil
         imagingProgress = 0

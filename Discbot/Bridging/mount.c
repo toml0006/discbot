@@ -6,12 +6,14 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <errno.h>
 #include <unistd.h>
 #include <sys/stat.h>
 #include <sys/mount.h>
 #include <CoreFoundation/CoreFoundation.h>
 #include <DiskArbitration/DiskArbitration.h>
 #include <DiscRecording/DRCoreDevice.h>
+#include <NetFS/NetFS.h>
 #include <IOKit/IOKitLib.h>
 #include <IOKit/storage/IOCDMedia.h>
 #include <IOKit/storage/IODVDMedia.h>
@@ -49,6 +51,71 @@ static void da_unmount_callback(DADiskRef disk, DADissenterRef dissenter, void *
         ctx->result = 0;
     }
     ctx->done = true;
+}
+
+char *mount_network_share(const char *url_string, int *status) {
+    if (status) *status = EINVAL;
+    if (!url_string || !url_string[0]) return NULL;
+
+    CFURLRef url = CFURLCreateWithBytes(
+        kCFAllocatorDefault,
+        (const UInt8 *)url_string,
+        (CFIndex)strlen(url_string),
+        kCFStringEncodingUTF8,
+        NULL
+    );
+    if (!url) return NULL;
+
+    CFMutableDictionaryRef open_options = CFDictionaryCreateMutable(
+        kCFAllocatorDefault,
+        0,
+        &kCFTypeDictionaryKeyCallBacks,
+        &kCFTypeDictionaryValueCallBacks
+    );
+    if (!open_options) {
+        CFRelease(url);
+        if (status) *status = ENOMEM;
+        return NULL;
+    }
+    /* The web server must never display a credential prompt. NetFS may use
+       credentials already stored in the logged-in user's Keychain. */
+    CFDictionarySetValue(open_options, kNAUIOptionKey, kNAUIOptionNoUI);
+
+    CFArrayRef mount_points = NULL;
+    int result = NetFSMountURLSync(
+        url,
+        NULL,
+        NULL,
+        NULL,
+        open_options,
+        NULL,
+        &mount_points
+    );
+    CFRelease(open_options);
+    CFRelease(url);
+
+    if (status) *status = result;
+    if (result != 0 || !mount_points || CFArrayGetCount(mount_points) < 1) {
+        if (mount_points) CFRelease(mount_points);
+        return NULL;
+    }
+
+    CFTypeRef first = CFArrayGetValueAtIndex(mount_points, 0);
+    char *path = NULL;
+    if (first && CFGetTypeID(first) == CFStringGetTypeID()) {
+        CFStringRef value = (CFStringRef)first;
+        CFIndex capacity = CFStringGetMaximumSizeForEncoding(
+            CFStringGetLength(value), kCFStringEncodingUTF8
+        ) + 1;
+        path = malloc((size_t)capacity);
+        if (path && !CFStringGetCString(value, path, capacity, kCFStringEncodingUTF8)) {
+            free(path);
+            path = NULL;
+        }
+    }
+    CFRelease(mount_points);
+    if (!path && status) *status = EIO;
+    return path;
 }
 
 int mount_wait_for_disc(int timeout) {
@@ -132,6 +199,39 @@ static bool service_belongs_to_unit(io_registry_entry_t service, uint64_t expect
         && actual_id == expected_id;
     IOObjectRelease(unit);
     return matches;
+}
+
+static bool class_has_service_for_unit(const char *class_name, uint64_t unit_id) {
+    io_iterator_t iterator = IO_OBJECT_NULL;
+    kern_return_t result = IOServiceGetMatchingServices(
+        kIOMasterPortDefault, IOServiceMatching(class_name), &iterator);
+    if (result != KERN_SUCCESS) return false;
+
+    bool found = false;
+    io_registry_entry_t service;
+    while ((service = IOIteratorNext(iterator))) {
+        if (service_belongs_to_unit(service, unit_id)) found = true;
+        IOObjectRelease(service);
+        if (found) break;
+    }
+    IOObjectRelease(iterator);
+    return found;
+}
+
+bool mount_is_optical_drive_available(void) {
+    io_registry_entry_t changer_unit = copy_changer_firewire_unit();
+    uint64_t unit_id = 0;
+    bool has_unit = changer_unit != IO_OBJECT_NULL
+        && IORegistryEntryGetRegistryEntryID(changer_unit, &unit_id) == KERN_SUCCESS;
+    if (changer_unit != IO_OBJECT_NULL) IOObjectRelease(changer_unit);
+    if (!has_unit) return false;
+
+    /* An empty healthy drive has a multimedia-command service even though it
+       has no IOMedia child.  Its absence means Catalina only attached the
+       changer LUN; waiting for inserted media can never succeed. */
+    return class_has_service_for_unit("IOSCSIMultimediaCommandsDevice", unit_id)
+        || class_has_service_for_unit("IODVDServices", unit_id)
+        || class_has_service_for_unit("IOCDServices", unit_id);
 }
 
 static void collect_media_candidate(

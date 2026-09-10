@@ -57,7 +57,8 @@ final class AppSettings: ObservableObject {
             if let data = try? JSONEncoder().encode(remoteDestinations) {
                 UserDefaults.standard.set(data, forKey: Keys.remoteDestinations)
             }
-            notifyRemoteConfigurationChanged()
+            // Controllers read destinations dynamically. Restarting the listener
+            // here would disconnect the request that just added a destination.
         }
     }
 
@@ -182,7 +183,7 @@ private struct SettingsView: View {
                                 .foregroundColor(destination.isAvailable ? .green : .orange)
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(destination.name).fontWeight(.medium)
-                                Text(destination.path).font(.caption).foregroundColor(.secondary).lineLimit(1)
+                                Text(destination.location).font(.caption).foregroundColor(.secondary).lineLimit(1)
                             }
                             Spacer()
                             Button("Remove") {

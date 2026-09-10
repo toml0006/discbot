@@ -27,6 +27,9 @@ struct DiscRecord: Identifiable, Equatable {
     let metadataProviderID: String?
     let metadataOverview: String?
     let artworkURL: String?
+    /// Durable, app-managed copy of the selected cover/poster. This is never
+    /// exposed to remote clients as a filesystem path.
+    let artworkPath: String?
     let metadataUserEdited: Bool
     let metadataTracks: [DiscMetadata.TrackInfo]?
     let firstSeenAt: String?
@@ -52,6 +55,7 @@ struct DiscRecord: Identifiable, Equatable {
         metadataProviderID: String? = nil,
         metadataOverview: String? = nil,
         artworkURL: String? = nil,
+        artworkPath: String? = nil,
         metadataUserEdited: Bool = false,
         metadataTracks: [DiscMetadata.TrackInfo]? = nil,
         firstSeenAt: String? = nil,
@@ -76,6 +80,7 @@ struct DiscRecord: Identifiable, Equatable {
         self.metadataProviderID = metadataProviderID
         self.metadataOverview = metadataOverview
         self.artworkURL = artworkURL
+        self.artworkPath = artworkPath
         self.metadataUserEdited = metadataUserEdited
         self.metadataTracks = metadataTracks
         self.firstSeenAt = firstSeenAt
@@ -84,7 +89,8 @@ struct DiscRecord: Identifiable, Equatable {
     }
 
     var hasReliableIdentity: Bool {
-        fingerprintConfidence >= 2
+        // Older catalogs assigned confidence 2 to sampled fingerprints.
+        fingerprintConfidence >= 2 && fingerprintKind != "sampled-content-v1"
     }
 
     var displayName: String {

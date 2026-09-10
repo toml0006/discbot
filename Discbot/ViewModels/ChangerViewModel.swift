@@ -60,6 +60,7 @@ final class CarouselBatchOperation {
     private let onSnapshot: (CarouselBatchSnapshot) -> Void
     private let onSlotState: (Int, Bool) -> Void
     private let onFinished: () -> Void
+    private let gateTimeout: TimeInterval
 
     private var running = true
     private var cancelled = false
@@ -73,6 +74,7 @@ final class CarouselBatchOperation {
     private var skippedSlots: [Int] = []
     private var failures: [CarouselBatchFailure] = []
     private var status: String
+    private var terminalStatus: String?
 
     let id = UUID().uuidString
     let mode: CarouselBatchMode
@@ -81,6 +83,7 @@ final class CarouselBatchOperation {
         mode: CarouselBatchMode,
         targets: [Int],
         service: ChangerServicing,
+        gateTimeout: TimeInterval = 10,
         onSnapshot: @escaping (CarouselBatchSnapshot) -> Void,
         onSlotState: @escaping (Int, Bool) -> Void,
         onFinished: @escaping () -> Void
@@ -88,6 +91,7 @@ final class CarouselBatchOperation {
         self.mode = mode
         self.targets = targets
         self.service = service
+        self.gateTimeout = gateTimeout
         self.onSnapshot = onSnapshot
         self.onSlotState = onSlotState
         self.onFinished = onFinished
@@ -142,30 +146,51 @@ final class CarouselBatchOperation {
                     if mode == .unload && !full { throw ChangerError.slotEmpty(slot) }
 
                     setStatus(mode == .load
-                        ? "Insert disc for slot \(slot) (\(offset + 1) of \(targets.count))"
+                        ? "Insert disc within 10 seconds for slot \(slot) (\(offset + 1) of \(targets.count))"
                         : "Presenting slot \(slot) (\(offset + 1) of \(targets.count))")
                     if mode == .load {
+                        // The XL1B owns the operator window while MOVE MEDIUM
+                        // is in flight and returns 06/53/00 after roughly ten
+                        // seconds if no disc arrives. Do not abort that task
+                        // from the host; the firmware closes the gate safely.
                         try service.importFromIE(slot)
+                        let verified = try service.getInventoryStatus()
+                        guard verified.slots[slot - 1].isFull else {
+                            throw ChangerError.moveFailed(
+                                "Inventory did not confirm the load for slot \(slot)"
+                            )
+                        }
+                        markCompleted(slot: slot)
+                        onSlotState(slot, true)
                     } else {
                         try service.unloadToIE(slot)
-                    }
+                        let presented = try service.getInventoryStatus()
+                        guard !presented.slots[slot - 1].isFull else {
+                            throw ChangerError.moveFailed(
+                                "Inventory did not confirm presentation of slot \(slot)"
+                            )
+                        }
+                        onSlotState(slot, false)
+                        setStatus("Remove the disc from the gate within 10 seconds")
 
-                    let verified = try service.getInventoryStatus()
-                    let destinationFull = verified.slots[slot - 1].isFull
-                    guard destinationFull == (mode == .load) else {
-                        throw ChangerError.moveFailed("Inventory did not confirm the move for slot \(slot)")
-                    }
-
-                    markCompleted(slot: slot)
-                    onSlotState(slot, mode == .load)
-
-                    if mode == .unload {
-                        let action = waitForAction(
-                            status: "Remove the disc from the gate, then continue",
-                            allowed: [.continueAfterRemoval, .finish, .cancel]
-                        )
-                        if action == .cancel { setCancelled() }
-                        if action == .finish || action == .cancel { break }
+                        if try service.waitForIESlotEmpty(timeout: gateTimeout) {
+                            markCompleted(slot: slot)
+                        } else {
+                            setStatus("Disc was not removed — returning it to slot \(slot)…")
+                            try service.importFromIE(slot)
+                            let returned = try service.getInventoryStatus()
+                            guard returned.slots[slot - 1].isFull,
+                                  try service.waitForIESlotEmpty(timeout: 1) else {
+                                throw ChangerError.moveFailed(
+                                    "Could not verify the disc returned to slot \(slot)"
+                                )
+                            }
+                            onSlotState(slot, true)
+                            let message = "Disc was not removed within 10 seconds; it was returned to slot \(slot) and bulk unload was cancelled"
+                            recordFailure(slot: slot, message: message)
+                            setCancelled(message)
+                            break
+                        }
                     }
                 } catch let error as ChangerError {
                     if reconcileCompleted(slot: slot) {
@@ -174,9 +199,16 @@ final class CarouselBatchOperation {
                         continue
                     }
 
-                    let message = error == .timeout && mode == .load
-                        ? "No disc was inserted for slot \(slot)"
-                        : error.localizedDescription
+                    if error == .timeout && operatorTimeoutRolledBack(slot: slot) {
+                        let message = mode == .load
+                            ? "No disc was inserted within 10 seconds; the gate was closed and bulk load was cancelled"
+                            : "Disc was not removed within 10 seconds; it was returned to slot \(slot) and bulk unload was cancelled"
+                        recordFailure(slot: slot, message: message)
+                        setCancelled(message)
+                        break
+                    }
+
+                    let message = error.localizedDescription
                     recordFailure(slot: slot, message: message)
                     let action = waitForAction(
                         status: message,
@@ -214,7 +246,7 @@ final class CarouselBatchOperation {
         allowedActions = []
         currentSlot = nil
         if cancelled {
-            status = "Carousel operation cancelled safely"
+            status = terminalStatus ?? "Carousel operation cancelled safely"
         } else if completedSlots.count + skippedSlots.count == targets.count {
             status = mode == .load
                 ? "Bulk load complete — \(completedSlots.count) discs loaded"
@@ -232,6 +264,21 @@ final class CarouselBatchOperation {
         guard let inventory = try? service.getInventoryStatus(),
               slot > 0, slot <= inventory.slots.count else { return false }
         return inventory.slots[slot - 1].isFull == (mode == .load)
+    }
+
+    /// Firmware operator-timeout is only considered safe after authoritative
+    /// inventory proves the original slot state was restored and the gate is
+    /// empty. This turns 06/53/00 into a clean cancellation without masking an
+    /// ambiguous or mechanically incomplete move.
+    private func operatorTimeoutRolledBack(slot: Int) -> Bool {
+        guard let inventory = try? service.getInventoryStatus(),
+              slot > 0, slot <= inventory.slots.count,
+              inventory.slots[slot - 1].isFull == (mode == .unload),
+              (try? service.waitForIESlotEmpty(timeout: 1)) == true else {
+            return false
+        }
+        onSlotState(slot, mode == .unload)
+        return true
     }
 
     private func shouldStop() -> Bool {
@@ -309,9 +356,10 @@ final class CarouselBatchOperation {
         publish()
     }
 
-    private func setCancelled() {
+    private func setCancelled(_ reason: String? = nil) {
         condition.lock()
         cancelled = true
+        if let reason = reason { terminalStatus = reason }
         condition.unlock()
         publish()
     }
@@ -454,7 +502,7 @@ final class ChangerViewModel: ObservableObject {
         switch slotFilter {
         case .all: break
         case .full: result = result.filter { $0.isFull || $0.isInDrive }
-        case .empty: result = result.filter { !$0.isFull && !$0.isInDrive }
+        case .empty: result = result.filter { !$0.isFull && !$0.isInDrive && !$0.hasException }
         case .audioCDs: result = result.filter { $0.discType == .audioCDDA }
         case .dataCDs: result = result.filter { $0.discType == .dataCD }
         case .dvds: result = result.filter { $0.discType == .dvd }
@@ -1370,7 +1418,7 @@ final class ChangerViewModel: ObservableObject {
             print("ejectDisc: source slot unknown but found slot \(inDriveSlot) marked as inDrive")
         } else {
             // Source slot truly unknown - need to find an empty slot
-            if let emptySlot = slots.first(where: { !$0.isFull && !$0.isInDrive })?.id {
+            if let emptySlot = slots.first(where: { !$0.isFull && !$0.isInDrive && !$0.hasException })?.id {
                 targetSlot = emptySlot
                 print("ejectDisc: source slot unknown, using first empty slot \(emptySlot)")
             } else {
@@ -1808,7 +1856,9 @@ final class ChangerViewModel: ObservableObject {
               uniqueTargets.allSatisfy({ $0 > 0 && $0 <= slots.count }) else { return false }
         let statesAreValid = uniqueTargets.allSatisfy { slot in
             let full = slots[slot - 1].isFull || slots[slot - 1].isInDrive
-            return mode == .load ? !full : full && !slots[slot - 1].isInDrive
+            return mode == .load
+                ? !full && !slots[slot - 1].hasException
+                : full && !slots[slot - 1].isInDrive && !slots[slot - 1].hasException
         }
         guard statesAreValid else { return false }
 
@@ -1891,7 +1941,7 @@ final class ChangerViewModel: ObservableObject {
     }
 
     var emptySlotCount: Int {
-        slots.filter { !$0.isFull && !$0.isInDrive }.count
+        slots.filter { !$0.isFull && !$0.isInDrive && !$0.hasException }.count
     }
 
     var deviceDescription: String {
@@ -1905,7 +1955,9 @@ final class ChangerViewModel: ObservableObject {
 
     /// Start batch load operation
     func startBatchLoad() {
-        _ = startCarouselLoad(targetSlots: slots.filter { !$0.isFull && !$0.isInDrive }.map(\.id))
+        _ = startCarouselLoad(targetSlots: slots.filter {
+            !$0.isFull && !$0.isInDrive && !$0.hasException
+        }.map(\.id))
     }
 
     // MARK: - Imaging Operations
@@ -1975,7 +2027,8 @@ final class ChangerViewModel: ObservableObject {
     /// Start batch imaging operation
     func startBatchImaging(
         outputDirectory: URL,
-        duplicatePolicy: DuplicatePolicy = .skipExisting
+        duplicatePolicy: DuplicatePolicy = .skipExisting,
+        outputMode: RipOutputMode = .automatic
     ) {
         guard isConnected else { return }
         guard !isHardwareBusy else { return }
@@ -2007,6 +2060,7 @@ final class ChangerViewModel: ObservableObject {
             slots: slotsToRip,
             outputDirectory: outputDirectory,
             duplicatePolicy: duplicatePolicy,
+            outputMode: outputMode,
             driveFallbackSourceSlot: slots.first(where: { $0.isInDrive })?.id,
             ignoreUntrackedDriveFull: driveWasReconciledEmpty,
             changerService: changerService,

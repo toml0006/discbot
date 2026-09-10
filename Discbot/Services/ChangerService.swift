@@ -207,6 +207,35 @@ final class ChangerService {
         return (status.drive.hasDisc, status.drive.sourceSlot)
     }
 
+    /// Wait for the operator to remove media from the first I/E element.
+    /// A single helper process owns the SCSI session for the entire bounded
+    /// poll so Catalina is not forced to repeatedly retire user clients.
+    func waitForIESlotEmpty(timeout: TimeInterval) throws -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+
+        guard let h = handle else { throw ChangerError.notConnected }
+        guard let map = elementMap, map.ie_count > 0 else {
+            throw ChangerError.commandFailed("Changer has no import/export slot")
+        }
+
+        let deadline = Date().addingTimeInterval(max(0, timeout))
+        repeat {
+            var status = MChangerElementStatus()
+            let result = mchanger_get_ie_status(h, 1, &status)
+            if result != MCHANGER_OK {
+                if mchanger_last_command_was_not_responding() {
+                    disconnectLocked()
+                    throw ChangerError.notResponding
+                }
+                throw ChangerError.commandFailed("READ I/E ELEMENT STATUS")
+            }
+            if !status.full { return true }
+            if Date() >= deadline { return false }
+            Thread.sleep(forTimeInterval: 0.5)
+        } while true
+    }
+
     /// Get inventory (slot + optional drive element status) in a single SCSI READ ELEMENT STATUS call.
     func getInventoryStatus() throws -> InventoryStatus {
         lock.lock()
@@ -673,6 +702,7 @@ private struct ChangerHelperResponse: Codable {
     var device: ChangerHelperDevice? = nil
     var inventory: ChangerHelperInventory? = nil
     var hasIESlot: Bool? = nil
+    var ieEmpty: Bool? = nil
     var slotCount: Int? = nil
 }
 
@@ -745,6 +775,13 @@ enum ChangerHelperRunner {
             case "import-ie":
                 try service.importFromIE(try slotArgument(arguments))
                 response = ChangerHelperResponse(ok: true)
+            case "wait-ie-empty":
+                response = ChangerHelperResponse(
+                    ok: true,
+                    ieEmpty: try service.waitForIESlotEmpty(
+                        timeout: try timeoutArgument(arguments, index: 1)
+                    )
+                )
             case "load-ie":
                 try service.loadFromIE()
                 response = ChangerHelperResponse(ok: true)
@@ -776,11 +813,23 @@ enum ChangerHelperRunner {
         }
     }
 
-    private static func slotArgument(_ arguments: [String]) throws -> Int {
-        guard arguments.count == 2, let slot = Int(arguments[1]), slot > 0 else {
+    private static func slotArgument(
+        _ arguments: [String],
+        expectedCount: Int = 2
+    ) throws -> Int {
+        guard arguments.count == expectedCount,
+              let slot = Int(arguments[1]), slot > 0 else {
             throw ChangerError.commandFailed("A positive slot number is required")
         }
         return slot
+    }
+
+    private static func timeoutArgument(_ arguments: [String], index: Int) throws -> TimeInterval {
+        guard arguments.indices.contains(index),
+              let timeout = TimeInterval(arguments[index]), timeout > 0 else {
+            throw ChangerError.commandFailed("A positive timeout is required")
+        }
+        return timeout
     }
 
     private static func helperInventory(_ inventory: ChangerService.InventoryStatus) -> ChangerHelperInventory {
@@ -812,6 +861,7 @@ enum ChangerHelperRunner {
         case .slotOccupied(let slot): code = "slotOccupied"; argument = slot; message = error.localizedDescription
         case .driveNotEmpty: code = "driveNotEmpty"; message = error.localizedDescription
         case .driveEmpty: code = "driveEmpty"; message = error.localizedDescription
+        case .opticalDriveUnavailable: code = "opticalDriveUnavailable"; message = error.localizedDescription
         case .mountFailed(let detail): code = "mountFailed"; message = detail
         case .unmountFailed(let detail): code = "unmountFailed"; message = detail
         case .timeout: code = "timeout"; message = error.localizedDescription
@@ -990,6 +1040,26 @@ final class ProcessChangerService: ChangerServicing {
         try runSingleMovement(command: "import-ie", slot: slotNumber)
     }
 
+    func waitForIESlotEmpty(timeout: TimeInterval) throws -> Bool {
+        guard isConnected else { throw ChangerError.notConnected }
+        operationLock.lock()
+        defer { operationLock.unlock() }
+        do {
+            let response = try invoke(
+                command: "wait-ie-empty",
+                arguments: [String(timeout)],
+                timeout: timeout + 20
+            )
+            guard let empty = response.ieEmpty else {
+                throw ChangerError.commandFailed("Helper returned no I/E status")
+            }
+            return empty
+        } catch {
+            markDisconnectedIfNeeded(error)
+            throw error
+        }
+    }
+
     func loadFromIE() throws {
         try runSingleMovement(command: "load-ie", slot: nil)
     }
@@ -1026,12 +1096,22 @@ final class ProcessChangerService: ChangerServicing {
         return connected
     }
 
-    private func runSingleMovement(command: String, slot: Int?) throws {
+    private func runSingleMovement(
+        command: String,
+        slot: Int?,
+        arguments: [String] = [],
+        processTimeout: TimeInterval = 120
+    ) throws {
         guard isConnected else { throw ChangerError.notConnected }
         operationLock.lock()
         defer { operationLock.unlock() }
         do {
-            _ = try invoke(command: command, slot: slot, timeout: 120)
+            _ = try invoke(
+                command: command,
+                slot: slot,
+                arguments: arguments,
+                timeout: processTimeout
+            )
             let response = try readInventoryWithFreshProcess()
             updateState(from: response)
         } catch {
@@ -1083,6 +1163,7 @@ final class ProcessChangerService: ChangerServicing {
     private func invoke(
         command: String,
         slot: Int? = nil,
+        arguments extraArguments: [String] = [],
         timeout: TimeInterval
     ) throws -> ChangerHelperResponse {
         guard let executable = Bundle.main.executableURL else {
@@ -1092,6 +1173,7 @@ final class ProcessChangerService: ChangerServicing {
         process.executableURL = executable
         var arguments = ["--changer-helper", command]
         if let slot = slot { arguments.append(String(slot)) }
+        arguments.append(contentsOf: extraArguments)
         process.arguments = arguments
         let output = Pipe()
         process.standardOutput = output
@@ -1140,6 +1222,7 @@ final class ProcessChangerService: ChangerServicing {
         case "slotOccupied": return .slotOccupied(response.errorArgument ?? 0)
         case "driveNotEmpty": return .driveNotEmpty
         case "driveEmpty": return .driveEmpty
+        case "opticalDriveUnavailable": return .opticalDriveUnavailable
         case "timeout": return .timeout
         case "cancelled": return .cancelled
         default: return .unknown(message)
@@ -1203,6 +1286,7 @@ protocol ChangerServicing: AnyObject {
     func ejectToSlot(_ slotNumber: Int) throws
     func unloadToIE(_ slotNumber: Int) throws
     func importFromIE(_ slotNumber: Int) throws
+    func waitForIESlotEmpty(timeout: TimeInterval) throws -> Bool
     func loadFromIE() throws
     func initializeElementStatus() throws
 
@@ -1319,6 +1403,12 @@ final class MockChangerState {
         lock.lock()
         defer { lock.unlock() }
         ieHasDisc = false
+    }
+
+    func snapshotIESlotFull() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return ieHasDisc
     }
 
     func loadFromSlot(_ slotNumber: Int) throws {
@@ -1542,6 +1632,16 @@ final class MockChangerService: ChangerServicing {
     func importFromIE(_ slotNumber: Int) throws {
         guard connected else { throw ChangerError.notConnected }
         try state.importIE(toSlot: slotNumber)
+    }
+
+    func waitForIESlotEmpty(timeout: TimeInterval) throws -> Bool {
+        guard connected else { throw ChangerError.notConnected }
+        let deadline = Date().addingTimeInterval(max(0, timeout))
+        repeat {
+            if !state.snapshotIESlotFull() { return true }
+            if Date() >= deadline { return false }
+            Thread.sleep(forTimeInterval: min(0.05, max(0.001, timeout)))
+        } while true
     }
 
     func loadFromIE() throws {

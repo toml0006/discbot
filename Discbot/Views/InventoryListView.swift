@@ -128,7 +128,7 @@ struct InventoryListView: View {
         }
 
         // Load from I/E (only if slot is empty)
-        if !slot.isFull && !slot.isInDrive && viewModel.hasIESlot {
+        if !slot.isFull && !slot.isInDrive && !slot.hasException && viewModel.hasIESlot {
             Button(action: { viewModel.importToSlot(slot.id) }) {
                 Text("Load from I/E")
             }
@@ -136,7 +136,7 @@ struct InventoryListView: View {
         }
 
         // Eject drive disc here (if disc is in drive, eject to this slot)
-        if !slot.isFull && !slot.isInDrive {
+        if !slot.isFull && !slot.isInDrive && !slot.hasException {
             if case .loaded = viewModel.driveStatus {
                 Button(action: { viewModel.ejectDisc(toSlot: slot.id) }) {
                     Text("Eject Here")
