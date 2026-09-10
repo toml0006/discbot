@@ -161,14 +161,14 @@ struct InventoryCarouselView: View {
         }
 
         // Load from I/E
-        if !slot.isFull && !slot.isInDrive && viewModel.hasIESlot {
+        if !slot.isFull && !slot.isInDrive && !slot.hasException && viewModel.hasIESlot {
             target.addItem(to: menu, title: "Load from I/E", enabled: canOperate) {
                 viewModel.importToSlot(slot.id)
             }
         }
 
         // Eject Here (drive disc to this slot)
-        if !slot.isFull && !slot.isInDrive {
+        if !slot.isFull && !slot.isInDrive && !slot.hasException {
             if case .loaded = viewModel.driveStatus {
                 target.addItem(to: menu, title: "Eject Here", enabled: canOperate) {
                     viewModel.ejectDisc(toSlot: slot.id)

@@ -9,6 +9,8 @@ import Foundation
 
 enum ChangerError: LocalizedError, Equatable {
     case connectionFailed
+    case ownedElsewhere
+    case notResponding
     case notConnected
     case deviceNotFound
     case commandFailed(String)
@@ -17,6 +19,7 @@ enum ChangerError: LocalizedError, Equatable {
     case slotOccupied(Int)
     case driveNotEmpty
     case driveEmpty
+    case opticalDriveUnavailable
     case mountFailed(String)
     case unmountFailed(String)
     case timeout
@@ -29,6 +32,10 @@ enum ChangerError: LocalizedError, Equatable {
         switch self {
         case .connectionFailed:
             return "Failed to connect to DVD changer"
+        case .ownedElsewhere:
+            return "The changer is already in use by another Discbot process"
+        case .notResponding:
+            return "The changer paused communication. Discbot closed the FireWire session and stopped issuing commands; reconnect the cable or retry when the changer is ready."
         case .notConnected:
             return "Not connected to DVD changer"
         case .deviceNotFound:
@@ -45,6 +52,8 @@ enum ChangerError: LocalizedError, Equatable {
             return "Drive already contains a disc"
         case .driveEmpty:
             return "No disc in drive"
+        case .opticalDriveUnavailable:
+            return "The changer is online, but macOS cannot see its optical drive. Stop the batch and restore the optical-drive connection before moving discs."
         case .mountFailed(let reason):
             return "Failed to mount disc: \(reason)"
         case .unmountFailed(let reason):
@@ -59,6 +68,15 @@ enum ChangerError: LocalizedError, Equatable {
             return "Metadata lookup failed: \(reason)"
         case .unknown(let msg):
             return msg
+        }
+    }
+
+    var isTransportUnavailable: Bool {
+        switch self {
+        case .connectionFailed, .notResponding, .notConnected, .deviceNotFound:
+            return true
+        default:
+            return false
         }
     }
 }

@@ -11,6 +11,406 @@ import Combine
 import DiskArbitration
 import os.log
 
+enum CarouselBatchMode: String {
+    case load
+    case unload
+}
+
+enum CarouselBatchAction: String {
+    case retry
+    case skip
+    case continueAfterRemoval = "continue"
+    case finish
+    case cancel
+}
+
+struct CarouselBatchFailure: Equatable {
+    let slot: Int
+    let message: String
+}
+
+struct CarouselBatchSnapshot: Equatable {
+    let id: String
+    let mode: CarouselBatchMode
+    let running: Bool
+    let cancelled: Bool
+    let awaitingAction: Bool
+    let allowedActions: [CarouselBatchAction]
+    let currentSlot: Int?
+    let currentIndex: Int
+    let total: Int
+    let completedSlots: [Int]
+    let skippedSlots: [Int]
+    let failures: [CarouselBatchFailure]
+    let status: String
+
+    var progress: Double {
+        total == 0 ? 0 : Double(completedSlots.count + skippedSlots.count) / Double(total)
+    }
+}
+
+/// Serial, state-reconciled operator workflow for the Sony XL1B gate. Each
+/// movement is followed by a fresh inventory read before the queue advances.
+/// The worker can wait for a web/desktop action without holding any changer
+/// lock, and cancellation takes effect at the next mechanically safe boundary.
+final class CarouselBatchOperation {
+    private let condition = NSCondition()
+    private let service: ChangerServicing
+    private let targets: [Int]
+    private let onSnapshot: (CarouselBatchSnapshot) -> Void
+    private let onSlotState: (Int, Bool) -> Void
+    private let onFinished: () -> Void
+    private let gateTimeout: TimeInterval
+
+    private var running = true
+    private var cancelled = false
+    private var finishRequested = false
+    private var awaitingAction = false
+    private var allowedActions: [CarouselBatchAction] = []
+    private var pendingAction: CarouselBatchAction?
+    private var currentSlot: Int?
+    private var currentIndex = 0
+    private var completedSlots: [Int] = []
+    private var skippedSlots: [Int] = []
+    private var failures: [CarouselBatchFailure] = []
+    private var status: String
+    private var terminalStatus: String?
+
+    let id = UUID().uuidString
+    let mode: CarouselBatchMode
+
+    init(
+        mode: CarouselBatchMode,
+        targets: [Int],
+        service: ChangerServicing,
+        gateTimeout: TimeInterval = 10,
+        onSnapshot: @escaping (CarouselBatchSnapshot) -> Void,
+        onSlotState: @escaping (Int, Bool) -> Void,
+        onFinished: @escaping () -> Void
+    ) {
+        self.mode = mode
+        self.targets = targets
+        self.service = service
+        self.gateTimeout = gateTimeout
+        self.onSnapshot = onSnapshot
+        self.onSlotState = onSlotState
+        self.onFinished = onFinished
+        self.status = mode == .load ? "Preparing bulk load…" : "Preparing bulk unload…"
+    }
+
+    func start() {
+        publish()
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            self?.run()
+        }
+    }
+
+    func perform(_ action: CarouselBatchAction) -> Bool {
+        condition.lock()
+        defer { condition.unlock() }
+        guard running else { return false }
+        if action == .cancel || action == .finish {
+            cancelled = action == .cancel
+            finishRequested = action == .finish
+            pendingAction = action
+            condition.broadcast()
+            return true
+        }
+        guard awaitingAction, allowedActions.contains(action) else { return false }
+        pendingAction = action
+        condition.broadcast()
+        return true
+    }
+
+    func snapshot() -> CarouselBatchSnapshot {
+        condition.lock()
+        defer { condition.unlock() }
+        return snapshotLocked()
+    }
+
+    private func run() {
+        for (offset, slot) in targets.enumerated() {
+            if shouldStop() { break }
+            setCurrent(slot: slot, index: offset + 1)
+
+            var retry = true
+            while retry && !shouldStop() {
+                retry = false
+                do {
+                    let inventory = try service.getInventoryStatus()
+                    guard slot > 0, slot <= inventory.slots.count else {
+                        throw ChangerError.commandFailed("Slot \(slot) is outside the reported inventory")
+                    }
+                    let full = inventory.slots[slot - 1].isFull
+                    if mode == .load && full { throw ChangerError.slotOccupied(slot) }
+                    if mode == .unload && !full { throw ChangerError.slotEmpty(slot) }
+
+                    setStatus(mode == .load
+                        ? "Insert disc within 10 seconds for slot \(slot) (\(offset + 1) of \(targets.count))"
+                        : "Presenting slot \(slot) (\(offset + 1) of \(targets.count))")
+                    if mode == .load {
+                        // The XL1B owns the operator window while MOVE MEDIUM
+                        // is in flight and returns 06/53/00 after roughly ten
+                        // seconds if no disc arrives. Do not abort that task
+                        // from the host; the firmware closes the gate safely.
+                        try service.importFromIE(slot)
+                        let verified = try service.getInventoryStatus()
+                        guard verified.slots[slot - 1].isFull else {
+                            throw ChangerError.moveFailed(
+                                "Inventory did not confirm the load for slot \(slot)"
+                            )
+                        }
+                        markCompleted(slot: slot)
+                        onSlotState(slot, true)
+                    } else {
+                        try service.unloadToIE(slot)
+                        let presented = try service.getInventoryStatus()
+                        guard !presented.slots[slot - 1].isFull else {
+                            throw ChangerError.moveFailed(
+                                "Inventory did not confirm presentation of slot \(slot)"
+                            )
+                        }
+                        onSlotState(slot, false)
+                        setStatus("Remove the disc from the gate within 10 seconds")
+
+                        if try service.waitForIESlotEmpty(timeout: gateTimeout) {
+                            markCompleted(slot: slot)
+                        } else {
+                            setStatus("Disc was not removed — returning it to slot \(slot)…")
+                            try service.importFromIE(slot)
+                            let returned = try service.getInventoryStatus()
+                            guard returned.slots[slot - 1].isFull,
+                                  try service.waitForIESlotEmpty(timeout: 1) else {
+                                throw ChangerError.moveFailed(
+                                    "Could not verify the disc returned to slot \(slot)"
+                                )
+                            }
+                            onSlotState(slot, true)
+                            let message = "Disc was not removed within 10 seconds; it was returned to slot \(slot) and bulk unload was cancelled"
+                            recordFailure(slot: slot, message: message)
+                            setCancelled(message)
+                            break
+                        }
+                    }
+                } catch let error as ChangerError {
+                    if reconcileCompleted(slot: slot) {
+                        markCompleted(slot: slot)
+                        onSlotState(slot, mode == .load)
+                        continue
+                    }
+
+                    if error == .timeout && operatorTimeoutRolledBack(slot: slot) {
+                        let message = mode == .load
+                            ? "No disc was inserted within 10 seconds; the gate was closed and bulk load was cancelled"
+                            : "Disc was not removed within 10 seconds; it was returned to slot \(slot) and bulk unload was cancelled"
+                        recordFailure(slot: slot, message: message)
+                        setCancelled(message)
+                        break
+                    }
+
+                    let message = error.localizedDescription
+                    recordFailure(slot: slot, message: message)
+                    let action = waitForAction(
+                        status: message,
+                        allowed: [.retry, .skip, .finish, .cancel]
+                    )
+                    switch action {
+                    case .retry:
+                        retry = true
+                    case .skip:
+                        markSkipped(slot: slot)
+                    case .cancel:
+                        setCancelled()
+                    case .finish, .continueAfterRemoval:
+                        break
+                    }
+                    if action == .finish || action == .cancel { break }
+                } catch {
+                    let message = error.localizedDescription
+                    recordFailure(slot: slot, message: message)
+                    let action = waitForAction(
+                        status: message,
+                        allowed: [.retry, .skip, .finish, .cancel]
+                    )
+                    retry = action == .retry
+                    if action == .skip { markSkipped(slot: slot) }
+                    if action == .cancel { setCancelled() }
+                    if action == .finish || action == .cancel { break }
+                }
+            }
+        }
+
+        condition.lock()
+        running = false
+        awaitingAction = false
+        allowedActions = []
+        currentSlot = nil
+        if cancelled {
+            status = terminalStatus ?? "Carousel operation cancelled safely"
+        } else if completedSlots.count + skippedSlots.count == targets.count {
+            status = mode == .load
+                ? "Bulk load complete — \(completedSlots.count) discs loaded"
+                : "Bulk unload complete — \(completedSlots.count) discs removed"
+        } else {
+            status = "Carousel operation finished early"
+        }
+        let final = snapshotLocked()
+        condition.unlock()
+        onSnapshot(final)
+        onFinished()
+    }
+
+    private func reconcileCompleted(slot: Int) -> Bool {
+        guard let inventory = try? service.getInventoryStatus(),
+              slot > 0, slot <= inventory.slots.count else { return false }
+        return inventory.slots[slot - 1].isFull == (mode == .load)
+    }
+
+    /// Firmware operator-timeout is only considered safe after authoritative
+    /// inventory proves the original slot state was restored and the gate is
+    /// empty. This turns 06/53/00 into a clean cancellation without masking an
+    /// ambiguous or mechanically incomplete move.
+    private func operatorTimeoutRolledBack(slot: Int) -> Bool {
+        guard let inventory = try? service.getInventoryStatus(),
+              slot > 0, slot <= inventory.slots.count,
+              inventory.slots[slot - 1].isFull == (mode == .unload),
+              (try? service.waitForIESlotEmpty(timeout: 1)) == true else {
+            return false
+        }
+        onSlotState(slot, mode == .unload)
+        return true
+    }
+
+    private func shouldStop() -> Bool {
+        condition.lock()
+        defer { condition.unlock() }
+        return cancelled || finishRequested
+    }
+
+    private func waitForAction(
+        status newStatus: String,
+        allowed: [CarouselBatchAction]
+    ) -> CarouselBatchAction {
+        condition.lock()
+        if cancelled || finishRequested {
+            let action: CarouselBatchAction = cancelled ? .cancel : .finish
+            condition.unlock()
+            return action
+        }
+        status = newStatus
+        awaitingAction = true
+        allowedActions = allowed
+        pendingAction = nil
+        let value = snapshotLocked()
+        condition.unlock()
+        onSnapshot(value)
+
+        condition.lock()
+        while pendingAction == nil && running {
+            condition.wait()
+        }
+        let action = pendingAction ?? .finish
+        pendingAction = nil
+        awaitingAction = false
+        allowedActions = []
+        condition.unlock()
+        publish()
+        return action
+    }
+
+    private func setCurrent(slot: Int, index: Int) {
+        condition.lock()
+        currentSlot = slot
+        currentIndex = index
+        condition.unlock()
+        publish()
+    }
+
+    private func setStatus(_ value: String) {
+        condition.lock()
+        status = value
+        condition.unlock()
+        publish()
+    }
+
+    private func markCompleted(slot: Int) {
+        condition.lock()
+        if !completedSlots.contains(slot) { completedSlots.append(slot) }
+        failures.removeAll { $0.slot == slot }
+        condition.unlock()
+        publish()
+    }
+
+    private func markSkipped(slot: Int) {
+        condition.lock()
+        if !skippedSlots.contains(slot) { skippedSlots.append(slot) }
+        condition.unlock()
+        publish()
+    }
+
+    private func recordFailure(slot: Int, message: String) {
+        condition.lock()
+        failures.removeAll { $0.slot == slot }
+        failures.append(CarouselBatchFailure(slot: slot, message: message))
+        condition.unlock()
+        publish()
+    }
+
+    private func setCancelled(_ reason: String? = nil) {
+        condition.lock()
+        cancelled = true
+        if let reason = reason { terminalStatus = reason }
+        condition.unlock()
+        publish()
+    }
+
+    private func publish() {
+        onSnapshot(snapshot())
+    }
+
+    private func snapshotLocked() -> CarouselBatchSnapshot {
+        CarouselBatchSnapshot(
+            id: id,
+            mode: mode,
+            running: running,
+            cancelled: cancelled,
+            awaitingAction: awaitingAction,
+            allowedActions: allowedActions,
+            currentSlot: currentSlot,
+            currentIndex: currentIndex,
+            total: targets.count,
+            completedSlots: completedSlots,
+            skippedSlots: skippedSlots,
+            failures: failures,
+            status: status
+        )
+    }
+}
+
+enum ChangerConnectionHealth: String {
+    case connecting
+    case online
+    case retrying
+    case deviceMissing
+    case ownedElsewhere
+    case notResponding
+    case offline
+
+    var label: String {
+        switch self {
+        case .connecting: return "Connecting"
+        case .online: return "Online"
+        case .retrying: return "Retrying"
+        case .deviceMissing: return "Device missing"
+        case .ownedElsewhere: return "Owned by another process"
+        case .notResponding: return "Communication paused — safe retry available"
+        case .offline: return "Offline"
+        }
+    }
+
+    var requiresPowerCycle: Bool { false }
+}
+
 final class ChangerViewModel: ObservableObject {
     private static let log = OSLog(
         subsystem: Bundle.main.bundleIdentifier ?? "Discbot",
@@ -28,6 +428,9 @@ final class ChangerViewModel: ObservableObject {
 
     // Connection state
     @Published var isConnected = false
+    @Published private(set) var connectionHealth: ChangerConnectionHealth = .offline
+    @Published private(set) var reconnectAttempt = 0
+    @Published private(set) var nextReconnectAt: Date?
     @Published var connectionError: ChangerError? {
         didSet {
             guard let connectionError = connectionError else { return }
@@ -53,7 +456,11 @@ final class ChangerViewModel: ObservableObject {
                  .loading(let slot) where slot > 0:
                 Self.setDirtyFlag(sourceSlot: slot)
             case .empty:
-                Self.clearDirtyFlag()
+                // State transitions and disconnects are not proof that the
+                // physical drive is empty.  Clear the recovery marker only at
+                // call sites that have verified the return with both the
+                // changer inventory and the optical-media view.
+                break
             case .error(let message):
                 os_log(
                     "driveStatus error while operation=%{public}@: %{public}@",
@@ -95,7 +502,7 @@ final class ChangerViewModel: ObservableObject {
         switch slotFilter {
         case .all: break
         case .full: result = result.filter { $0.isFull || $0.isInDrive }
-        case .empty: result = result.filter { !$0.isFull && !$0.isInDrive }
+        case .empty: result = result.filter { !$0.isFull && !$0.isInDrive && !$0.hasException }
         case .audioCDs: result = result.filter { $0.discType == .audioCDDA }
         case .dataCDs: result = result.filter { $0.discType == .dataCD }
         case .dvds: result = result.filter { $0.discType == .dvd }
@@ -122,6 +529,11 @@ final class ChangerViewModel: ObservableObject {
     // Operation state
     @Published var currentOperation: Operation?
     @Published var operationStatusText: String = ""
+    @Published private(set) var operationNotice: String?
+
+    var isHardwareBusy: Bool {
+        currentOperation != nil || batchState?.isRunning == true
+    }
 
     // Batch operation
     @Published var batchState: BatchOperationState?
@@ -134,10 +546,16 @@ final class ChangerViewModel: ObservableObject {
     @Published var unloadAllQueue: [Int] = []  // Slots remaining to unload
     @Published var unloadAllCompleted: Int = 0
     @Published var unloadAllTotal: Int = 0
+    @Published private(set) var carouselBatchSnapshot: CarouselBatchSnapshot?
+    private var carouselBatchOperation: CarouselBatchOperation?
 
     // Settings
     private let settings: AppSettings
     private var cancellables: Set<AnyCancellable> = []
+    private var reconnectWorkItem: DispatchWorkItem?
+    private var hardwareWatchdog: DispatchSourceTimer?
+    private var presenceCheckInFlight = false
+    private var lastHardwarePresence: Bool?
 
     // Services
     private var changerService: ChangerServicing
@@ -166,6 +584,11 @@ final class ChangerViewModel: ObservableObject {
         case unloading(Int)
         case scanningSlot(Int)
         case waitingForDiscRemoval(Int)  // Waiting for user to remove disc from I/E
+        case batchLoading
+        case batchImaging
+        case batchScanning
+        case bulkImport
+        case bulkExport
     }
 
     struct CarouselAnimationEvent: Equatable {
@@ -190,7 +613,7 @@ final class ChangerViewModel: ObservableObject {
             self.imagingService = MockImagingService()
         } else {
             self.mockState = nil
-            self.changerService = ChangerService()
+            self.changerService = ProcessChangerService()
             self.mountService = MountService()
             self.imagingService = ImagingService()
         }
@@ -213,16 +636,29 @@ final class ChangerViewModel: ObservableObject {
 
             // Auto-connect on start
             connect()
+            startHardwareWatchdog()
         }
     }
 
     // MARK: - Connection
 
     func connect() {
+        attemptConnection(resetRetryBudget: true)
+    }
+
+    private func attemptConnection(resetRetryBudget: Bool) {
         guard !isConnected else { return }
         guard currentOperation == nil else { return }
 
+        if resetRetryBudget {
+            reconnectAttempt = 0
+            reconnectWorkItem?.cancel()
+            reconnectWorkItem = nil
+            nextReconnectAt = nil
+        }
+
         currentOperation = .connecting
+        connectionHealth = reconnectAttempt == 0 ? .connecting : .retrying
         operationStatusText = "Connecting to changer..."
         connectionError = nil
 
@@ -232,46 +668,164 @@ final class ChangerViewModel: ObservableObject {
             do {
                 try self.changerService.connect()
 
-                DispatchQueue.main.async {
-                    self.isConnected = true
-                    self.operationStatusText = "Connected, loading inventory..."
-                }
-
-                // Get device info
-                let info = try self.changerService.getDeviceInfo()
-                DispatchQueue.main.async {
-                    self.deviceVendor = info.vendor
-                    self.deviceProduct = info.product
-                    NotificationCenter.default.post(name: NSNotification.Name("DeviceInfoChanged"), object: nil)
+                // Identification comes from IORegistry and is optional. The
+                // element-map read in connect() and the inventory read below
+                // are the authoritative connectivity checks.
+                let info: ChangerService.ChangerDeviceInfo?
+                do {
+                    info = try self.changerService.getDeviceInfo()
+                } catch {
+                    info = nil
+                    os_log(
+                        "Changer identity lookup failed after a successful element-map read; validating with inventory: %{public}@",
+                        log: Self.log,
+                        type: .info,
+                        error.localizedDescription
+                    )
                 }
 
                 // Load initial inventory and hydrate catalog cache once.
-                self.doRefreshInventory(includeCatalogHydration: true)
+                if let inventoryError = self.doRefreshInventory(
+                    includeCatalogHydration: true,
+                    publishConnectionFailure: false
+                ) {
+                    throw inventoryError
+                }
 
                 DispatchQueue.main.async {
+                    self.deviceVendor = info?.vendor ?? "Sony"
+                    self.deviceProduct = info?.product ?? "VAIOChanger1"
+                    NotificationCenter.default.post(name: NSNotification.Name("DeviceInfoChanged"), object: nil)
+                    self.isConnected = true
+                    self.connectionHealth = .online
+                    self.connectionError = nil
+                    self.reconnectAttempt = 0
+                    self.nextReconnectAt = nil
                     self.currentOperation = nil
                 }
 
             } catch let error as ChangerError {
+                self.changerService.disconnect()
                 DispatchQueue.main.async {
                     self.connectionError = error
                     self.currentOperation = nil
                     self.isConnected = false
+                    self.scheduleReconnect(after: error)
                 }
             } catch {
+                self.changerService.disconnect()
                 DispatchQueue.main.async {
                     self.connectionError = .unknown(error.localizedDescription)
                     self.currentOperation = nil
                     self.isConnected = false
+                    self.scheduleReconnect(after: .unknown(error.localizedDescription))
                 }
             }
         }
     }
 
-    func disconnect() {
+    private func scheduleReconnect(after error: ChangerError) {
+        reconnectWorkItem?.cancel()
+        let delays: [TimeInterval]
+        switch error {
+        case .notResponding:
+            connectionHealth = .notResponding
+            // Reopen the SCSI user client once after a cooldown. Repeated
+            // commands against a sick FireWire session can wedge this Sony,
+            // so further attempts require a device reattach or an explicit
+            // user retry.
+            delays = [5]
+        case .ownedElsewhere:
+            connectionHealth = .ownedElsewhere
+            delays = [5, 15, 30]
+        case .deviceNotFound:
+            connectionHealth = .deviceMissing
+            // Presence watchdog reconnects immediately when FireWire reports
+            // a remove/add transition; these retries cover missed events.
+            delays = [2, 5, 15, 30, 60]
+        default:
+            connectionHealth = .offline
+            delays = [2, 5, 15]
+        }
+
+        guard reconnectAttempt < delays.count else {
+            nextReconnectAt = nil
+            return
+        }
+        let delay = delays[reconnectAttempt]
+        reconnectAttempt += 1
+        nextReconnectAt = Date().addingTimeInterval(delay)
+        let work = DispatchWorkItem { [weak self] in
+            guard let self = self else { return }
+            self.reconnectWorkItem = nil
+            self.nextReconnectAt = nil
+            self.attemptConnection(resetRetryBudget: false)
+        }
+        reconnectWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+    }
+
+    /// Keep the UI's connection state aligned with the service handle. Slot
+    /// and drive state are intentionally preserved so a loaded disc remains
+    /// recoverable after a transport failure.
+    private func applyChangerError(_ error: ChangerError) {
+        connectionError = error
+        guard error.isTransportUnavailable || !changerService.isConnected else { return }
+
+        isConnected = false
+        switch error {
+        case .notResponding:
+            connectionHealth = .notResponding
+        case .deviceNotFound:
+            connectionHealth = .deviceMissing
+        default:
+            connectionHealth = .offline
+        }
+        scheduleReconnect(after: error)
+    }
+
+    private func startHardwareWatchdog() {
+        guard hardwareWatchdog == nil, mockState == nil else { return }
+        let timer = DispatchSource.makeTimerSource(queue: .main)
+        timer.schedule(deadline: .now() + 3, repeating: 5)
+        timer.setEventHandler { [weak self] in self?.checkHardwarePresence() }
+        hardwareWatchdog = timer
+        timer.resume()
+    }
+
+    private func checkHardwarePresence() {
+        guard !presenceCheckInFlight, currentOperation != .connecting, mockState == nil else { return }
+        presenceCheckInFlight = true
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let present = ChangerService.isChangerPresent()
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                self.presenceCheckInFlight = false
+                let previous = self.lastHardwarePresence
+                self.lastHardwarePresence = present
+                if !present {
+                    self.reconnectWorkItem?.cancel()
+                    self.reconnectWorkItem = nil
+                    self.nextReconnectAt = nil
+                    if self.isConnected {
+                        self.disconnect(resultingHealth: .deviceMissing)
+                    } else {
+                        self.connectionHealth = .deviceMissing
+                    }
+                    return
+                }
+                if previous == false, !self.isConnected, self.currentOperation == nil {
+                    self.attemptConnection(resetRetryBudget: true)
+                }
+            }
+        }
+    }
+
+    func disconnect(resultingHealth: ChangerConnectionHealth = .offline) {
         changerService.disconnect()
         DispatchQueue.main.async { [weak self] in
             self?.isConnected = false
+            self?.connectionHealth = resultingHealth
             self?.slots = []
             self?.driveStatus = .empty
             self?.currentBSDName = nil
@@ -295,6 +849,9 @@ final class ChangerViewModel: ObservableObject {
 
         // Tear down any existing connection state immediately.
         changerService.disconnect()
+        reconnectWorkItem?.cancel()
+        reconnectWorkItem = nil
+        nextReconnectAt = nil
         isConnected = false
         connectionError = nil
         deviceVendor = nil
@@ -318,6 +875,8 @@ final class ChangerViewModel: ObservableObject {
         }
 
         if enabled {
+            hardwareWatchdog?.cancel()
+            hardwareWatchdog = nil
             let state = MockChangerState()
             mockState = state
             changerService = MockChangerService(state: state)
@@ -325,9 +884,11 @@ final class ChangerViewModel: ObservableObject {
             imagingService = MockImagingService()
         } else {
             mockState = nil
-            changerService = ChangerService()
+            changerService = ProcessChangerService()
             mountService = MountService()
             imagingService = ImagingService()
+            lastHardwarePresence = nil
+            startHardwareWatchdog()
         }
 
         // Reconnect using the new backend.
@@ -381,7 +942,12 @@ final class ChangerViewModel: ObservableObject {
 
         switch driveStatus {
         case .empty:
-            driveStatus = .loaded(sourceSlot: 0, mountPoint: mountPoint)
+            guard let recoverySlot = Self.checkDirtyFlag() else {
+                // Ignore a stale IOMedia node after the changer has already
+                // verified and recorded a physical return.
+                return
+            }
+            driveStatus = .loaded(sourceSlot: recoverySlot, mountPoint: mountPoint)
         case .loaded(let sourceSlot, _):
             driveStatus = .loaded(sourceSlot: sourceSlot, mountPoint: mountPoint)
             if sourceSlot > 0, sourceSlot <= slots.count {
@@ -413,16 +979,75 @@ final class ChangerViewModel: ObservableObject {
         }
     }
 
+    /// Ask the changer to perform a physical element scan, then read the
+    /// resulting inventory. This is intentionally separate from the fast
+    /// refresh because a 200-disc carousel can take several minutes.
+    func rescanElementStatus() {
+        guard isConnected else { return }
+        guard currentOperation == nil else { return }
+        guard batchState?.isRunning != true else { return }
+
+        currentOperation = .refreshing
+        operationStatusText = "Rescanning changer inventory..."
+        operationNotice = nil
+
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self = self else { return }
+            let finalStatus: String
+            do {
+                try self.changerService.initializeElementStatus()
+                if let refreshError = self.doRefreshInventory() {
+                    throw refreshError
+                }
+                finalStatus = "Full inventory rescan complete"
+            } catch let error as ChangerError {
+                finalStatus = "Full inventory rescan failed: \(error.localizedDescription)"
+                DispatchQueue.main.async {
+                    self.applyChangerError(error)
+                }
+            } catch {
+                finalStatus = "Full inventory rescan failed: \(error.localizedDescription)"
+            }
+            DispatchQueue.main.async {
+                self.operationStatusText = finalStatus
+                self.operationNotice = finalStatus
+                self.currentOperation = nil
+            }
+        }
+    }
+
     /// Internal refresh - must be called from background thread
-    private func doRefreshInventory(includeCatalogHydration: Bool = false) {
+    @discardableResult
+    private func doRefreshInventory(
+        includeCatalogHydration: Bool = false,
+        publishConnectionFailure: Bool = true
+    ) -> ChangerError? {
         do {
             let inventory = try self.changerService.getInventoryStatus()
             var newSlots = inventory.slots
             let sourceSlotFromSCSI = inventory.drive.sourceSlot
+            let recoverySourceSlot = Self.checkDirtyFlag()
 
             // Use DiskArbitration to detect if disc is present (more reliable)
             let discPresent = self.mountService.isDiscPresent()
             let bsdName = self.mountService.findDiscBSDName()
+            let sourceSlotStillFull: Bool = {
+                guard let source = sourceSlotFromSCSI,
+                      source > 0,
+                      source <= newSlots.count else { return false }
+                return newSlots[source - 1].isFull
+            }()
+            let contradictoryDriveFull = inventory.drive.hasDisc
+                && sourceSlotStillFull
+                && !discPresent
+            let changerDriveHasDisc = inventory.drive.hasDisc && !contradictoryDriveFull
+            if contradictoryDriveFull {
+                os_log(
+                    "Ignoring stale changer drive-full bit: source slot is full and optical drive has no media",
+                    log: Self.log,
+                    type: .info
+                )
+            }
 
             if includeCatalogHydration {
                 hydrateCatalogCache()
@@ -449,12 +1074,20 @@ final class ChangerViewModel: ObservableObject {
 #endif
 
             DispatchQueue.main.async {
+                self.connectionError = nil
+                if self.isConnected {
+                    self.connectionHealth = .online
+                }
                 self.slots = newSlots
 
-                if discPresent, let bsd = bsdName {
-                    // Disc is present - use DiskArbitration info
-                    self.currentBSDName = bsd
-                    let mountPoint = self.mountService.getMountPoint(bsdName: bsd)
+                let shouldTreatDriveAsLoaded = changerDriveHasDisc || recoverySourceSlot != nil
+                if shouldTreatDriveAsLoaded {
+                    // Changer inventory owns physical state. Disk Arbitration
+                    // supplies optional BSD/mount metadata and may lag a move.
+                    self.currentBSDName = bsdName
+                    let mountPoint = bsdName.flatMap {
+                        self.mountService.getMountPoint(bsdName: $0)
+                    }
 
                     // Use SCSI source slot if available, otherwise preserve existing sourceSlot
                     // (VGP-XL1B doesn't return drive element data, so we must remember it)
@@ -463,6 +1096,8 @@ final class ChangerViewModel: ObservableObject {
                         sourceSlot = scsiSlot
                     } else if let existing = existingSourceSlot, existing > 0 {
                         sourceSlot = existing
+                    } else if let recovered = recoverySourceSlot, recovered > 0 {
+                        sourceSlot = recovered
                     } else {
                         sourceSlot = 0  // Unknown
                     }
@@ -471,23 +1106,32 @@ final class ChangerViewModel: ObservableObject {
 
                     // Mark slot as in drive if we know the source
                     if sourceSlot > 0 && sourceSlot <= self.slots.count {
+                        self.slots[sourceSlot - 1].isFull = false
                         self.slots[sourceSlot - 1].isInDrive = true
                     }
                 } else {
-                    // No disc detected
+                    // The changer reports an empty physical drive and there is
+                    // no outstanding recovery record. Ignore stale IOMedia.
+                    Self.clearDirtyFlag()
                     self.driveStatus = .empty
                     self.currentBSDName = nil
                 }
             }
+            return nil
 
         } catch let error as ChangerError {
-            DispatchQueue.main.async {
-                self.connectionError = error
+            if publishConnectionFailure {
+                DispatchQueue.main.async {
+                    self.applyChangerError(error)
+                }
             }
+            return error
         } catch {
+            let wrapped = ChangerError.unknown(error.localizedDescription)
             DispatchQueue.main.async {
-                self.connectionError = .unknown(error.localizedDescription)
+                self.connectionError = wrapped
             }
+            return wrapped
         }
     }
 
@@ -552,8 +1196,7 @@ final class ChangerViewModel: ObservableObject {
 
     func scanInventory() {
         guard isConnected else { return }
-        guard currentOperation == nil else { return }
-        guard batchState?.isRunning != true else { return }
+        guard !isHardwareBusy else { return }
 
         let unknownSlots = slots.filter { $0.isFull && !$0.isInDrive && $0.discType == .unscanned }
         guard !unknownSlots.isEmpty else {
@@ -562,9 +1205,9 @@ final class ChangerViewModel: ObservableObject {
         }
 
         let state = BatchOperationState()
-        DispatchQueue.main.async { [weak self] in
-            self?.batchState = state
-        }
+        batchState = state
+        currentOperation = .batchScanning
+        operationStatusText = "Scanning unknown discs..."
 
         let fallbackSourceSlot = slots.first(where: { $0.isInDrive })?.id
         let scannedSlotIds = unknownSlots.map(\.id)
@@ -606,13 +1249,19 @@ final class ChangerViewModel: ObservableObject {
                     }
                     self.driveStatus = .empty
                     self.currentBSDName = nil
+                    Self.clearDirtyFlag()
                 }
             },
             onComplete: { [weak self] in
+                DispatchQueue.main.async {
+                    self?.currentOperation = nil
+                }
                 DispatchQueue.global(qos: .userInitiated).async {
                     self?.refreshCatalogCache(forSlotIds: scannedSlotIds)
                 }
-                self?.refreshInventory()
+                DispatchQueue.main.async {
+                    self?.refreshInventory()
+                }
             }
         )
     }
@@ -697,7 +1346,7 @@ final class ChangerViewModel: ObservableObject {
 
             } catch let error as ChangerError {
                 DispatchQueue.main.async {
-                    self.connectionError = error
+                    self.applyChangerError(error)
                     self.currentOperation = nil
 
                     // If drive is not empty, update our state and refresh
@@ -705,7 +1354,7 @@ final class ChangerViewModel: ObservableObject {
                         // We thought drive was empty but it's not - refresh to sync state
                         self.driveStatus = .loaded(sourceSlot: 0, mountPoint: nil)
                     } else {
-                        self.driveStatus = .error(error.localizedDescription ?? "Unknown error")
+                        self.driveStatus = .error(error.localizedDescription)
                     }
                 }
 
@@ -769,7 +1418,7 @@ final class ChangerViewModel: ObservableObject {
             print("ejectDisc: source slot unknown but found slot \(inDriveSlot) marked as inDrive")
         } else {
             // Source slot truly unknown - need to find an empty slot
-            if let emptySlot = slots.first(where: { !$0.isFull && !$0.isInDrive })?.id {
+            if let emptySlot = slots.first(where: { !$0.isFull && !$0.isInDrive && !$0.hasException })?.id {
                 targetSlot = emptySlot
                 print("ejectDisc: source slot unknown, using first empty slot \(emptySlot)")
             } else {
@@ -788,27 +1437,18 @@ final class ChangerViewModel: ObservableObject {
             guard let self = self else { return }
 
             do {
-                // Unmount the disc first
                 if let bsd = self.currentBSDName {
                     if self.mountService.isMounted(bsdName: bsd) {
                         DispatchQueue.main.async {
                             self.operationStatusText = "Unmounting disc..."
                         }
-                        try self.mountService.unmountDisc(bsdName: bsd)
+                        try self.mountService.unmountDisc(bsdName: bsd, force: true)
                     }
 
-                    // Eject the optical drive tray using drutil (real hardware only).
-                    // This tells the drive to release/present the disc so the changer can grab it.
-                    if self.mockState == nil {
-                        DispatchQueue.main.async {
-                            self.operationStatusText = "Ejecting disc from drive..."
-                        }
-                        let process = Process()
-                        process.launchPath = "/usr/bin/drutil"
-                        process.arguments = ["eject"]
-                        process.launch()
-                        process.waitUntilExit()
+                    DispatchQueue.main.async {
+                        self.operationStatusText = "Releasing disc from drive..."
                     }
+                    try self.mountService.ejectDisc(bsdName: bsd, force: true)
                 }
 
                 DispatchQueue.main.async {
@@ -829,14 +1469,15 @@ final class ChangerViewModel: ObservableObject {
 
                     self.driveStatus = .empty
                     self.currentBSDName = nil
+                    Self.clearDirtyFlag()
                     self.currentOperation = nil
                     completion?()
                 }
 
             } catch let error as ChangerError {
                 DispatchQueue.main.async {
-                    self.connectionError = error
-                    self.driveStatus = .error(error.localizedDescription ?? "Unknown error")
+                    self.applyChangerError(error)
+                    self.driveStatus = .error(error.localizedDescription)
                     self.currentOperation = nil
                     self.pendingLoadSlotIdAfterEject = nil
                 }
@@ -886,7 +1527,7 @@ final class ChangerViewModel: ObservableObject {
 
             } catch let error as ChangerError {
                 DispatchQueue.main.async {
-                    self.connectionError = error
+                    self.applyChangerError(error)
                     self.currentOperation = nil
                 }
             } catch {
@@ -929,7 +1570,7 @@ final class ChangerViewModel: ObservableObject {
 
             } catch let error as ChangerError {
                 DispatchQueue.main.async {
-                    self.connectionError = error
+                    self.applyChangerError(error)
                     self.currentOperation = nil
                 }
             } catch {
@@ -1009,22 +1650,14 @@ final class ChangerViewModel: ObservableObject {
                     self.operationStatusText = "Unmounting disc..."
                 }
 
-                // 5. Unmount
                 if self.mountService.isMounted(bsdName: bsdName) {
-                    try self.mountService.unmountDisc(bsdName: bsdName)
+                    try self.mountService.unmountDisc(bsdName: bsdName, force: true)
                 }
 
-                // 6. Eject from drive tray (real hardware only)
-                if self.mockState == nil {
-                    DispatchQueue.main.async {
-                        self.operationStatusText = "Ejecting disc from drive..."
-                    }
-                    let process = Process()
-                    process.launchPath = "/usr/bin/drutil"
-                    process.arguments = ["eject"]
-                    process.launch()
-                    process.waitUntilExit()
+                DispatchQueue.main.async {
+                    self.operationStatusText = "Releasing disc from drive..."
                 }
+                try self.mountService.ejectDisc(bsdName: bsdName, force: true)
 
                 DispatchQueue.main.async {
                     self.driveStatus = .ejecting(toSlot: slotNumber)
@@ -1040,13 +1673,14 @@ final class ChangerViewModel: ObservableObject {
                     self.slots[slotNumber - 1].isFull = true
                     self.driveStatus = .empty
                     self.currentBSDName = nil
+                    Self.clearDirtyFlag()
                     self.currentOperation = nil
                 }
 
             } catch let error as ChangerError {
                 DispatchQueue.main.async {
-                    self.connectionError = error
-                    self.driveStatus = .error(error.localizedDescription ?? "Unknown error")
+                    self.applyChangerError(error)
+                    self.driveStatus = .error(error.localizedDescription)
                     self.currentOperation = nil
                 }
             } catch {
@@ -1092,7 +1726,7 @@ final class ChangerViewModel: ObservableObject {
 
             } catch let error as ChangerError {
                 DispatchQueue.main.async {
-                    self.connectionError = error
+                    self.applyChangerError(error)
                     self.currentOperation = nil
                 }
             } catch {
@@ -1133,7 +1767,7 @@ final class ChangerViewModel: ObservableObject {
 
             } catch let error as ChangerError {
                 DispatchQueue.main.async {
-                    self.connectionError = error
+                    self.applyChangerError(error)
                     self.currentOperation = nil
                 }
             } catch {
@@ -1189,7 +1823,7 @@ final class ChangerViewModel: ObservableObject {
 
             } catch let error as ChangerError {
                 DispatchQueue.main.async {
-                    self.connectionError = error
+                    self.applyChangerError(error)
                     self.currentOperation = nil
                 }
             } catch {
@@ -1201,115 +1835,103 @@ final class ChangerViewModel: ObservableObject {
         }
     }
 
-    // MARK: - Unload All
+    // MARK: - Software-driven carousel loading and unloading
 
-    /// Start unloading all discs to I/E slot one at a time
-    func startUnloadAll() {
-        guard isConnected else { return }
-        guard currentOperation == nil else { return }
-        guard hasIESlot else { return }
+    @discardableResult
+    func startCarouselLoad(targetSlots: [Int]) -> Bool {
+        beginCarouselBatch(mode: .load, targets: targetSlots)
+    }
 
-        // Build queue of slots with discs (not in drive)
-        let slotsToUnload = slots.filter { $0.isFull && !$0.isInDrive }.map { $0.id }
-        guard !slotsToUnload.isEmpty else { return }
+    @discardableResult
+    func startCarouselUnload(targetSlots: [Int]) -> Bool {
+        beginCarouselBatch(mode: .unload, targets: targetSlots)
+    }
 
-        unloadAllQueue = slotsToUnload
-        unloadAllTotal = slotsToUnload.count
+    private func beginCarouselBatch(mode: CarouselBatchMode, targets: [Int]) -> Bool {
+        guard isConnected, currentOperation == nil, batchState?.isRunning != true,
+              hasIESlot, driveStatus == .empty else { return false }
+
+        let uniqueTargets = Array(Set(targets)).sorted()
+        guard !uniqueTargets.isEmpty,
+              uniqueTargets.allSatisfy({ $0 > 0 && $0 <= slots.count }) else { return false }
+        let statesAreValid = uniqueTargets.allSatisfy { slot in
+            let full = slots[slot - 1].isFull || slots[slot - 1].isInDrive
+            return mode == .load
+                ? !full && !slots[slot - 1].hasException
+                : full && !slots[slot - 1].isInDrive && !slots[slot - 1].hasException
+        }
+        guard statesAreValid else { return false }
+
+        currentOperation = mode == .load ? .bulkImport : .bulkExport
+        operationStatusText = mode == .load ? "Preparing bulk load…" : "Preparing bulk unload…"
+        operationNotice = nil
+        unloadAllInProgress = mode == .unload
+        unloadAllQueue = uniqueTargets
+        unloadAllTotal = uniqueTargets.count
         unloadAllCompleted = 0
-        unloadAllInProgress = true
 
-        // Start with first disc
-        unloadNextDisc()
-    }
-
-    /// Cancel unload all operation
-    func cancelUnloadAll() {
-        unloadAllInProgress = false
-        unloadAllQueue = []
-        currentOperation = nil
-    }
-
-    /// Continue to next disc after user removes current one from I/E
-    func continueUnloadAll() {
-        guard unloadAllInProgress else { return }
-        // In mock mode, treat "Continue" as the user removing the disc from I/E.
-        mockState?.clearIESlot()
-        unloadNextDisc()
-    }
-
-    private func unloadNextDisc() {
-        guard unloadAllInProgress else { return }
-
-        guard let nextSlot = unloadAllQueue.first else {
-            // All done
-            unloadAllInProgress = false
-            currentOperation = nil
-            operationStatusText = "Eject complete"
-            return
-        }
-
-        unloadAllQueue.removeFirst()
-
-        DispatchQueue.main.async { [weak self] in
-            guard let self = self else { return }
-            self.currentOperation = .unloading(nextSlot)
-            self.operationStatusText = "Ejecting slot \(nextSlot) to I/E (\(self.unloadAllCompleted + 1) of \(self.unloadAllTotal))..."
-        }
-
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            guard let self = self else { return }
-
-            do {
-                try self.changerService.unloadToIE(nextSlot)
-                self.publishCarouselAnimation(.ejectFromChamber(nextSlot))
-
+        let operation = CarouselBatchOperation(
+            mode: mode,
+            targets: uniqueTargets,
+            service: changerService,
+            onSnapshot: { [weak self] snapshot in
                 DispatchQueue.main.async {
-                    self.slots[nextSlot - 1].isFull = false
-                    self.unloadAllCompleted += 1
-
-                    if self.mockState != nil {
-                        // In mock mode, auto-clear I/E and continue without waiting for user input.
-                        self.mockState?.clearIESlot()
-                        if self.unloadAllQueue.isEmpty {
-                            self.unloadAllInProgress = false
-                            self.currentOperation = nil
-                            self.operationStatusText = "Eject complete"
-                        } else {
-                            self.currentOperation = .refreshing
-                            self.operationStatusText = "Preparing next disc..."
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-                                self.unloadNextDisc()
-                            }
-                        }
-                    } else if self.unloadAllQueue.isEmpty {
-                        // Last disc - we're done
-                        self.unloadAllInProgress = false
-                        self.currentOperation = nil
-                        self.operationStatusText = "Eject complete - remove disc from I/E slot"
-                    } else {
-                        // Wait for user to remove disc before continuing
-                        self.currentOperation = .waitingForDiscRemoval(nextSlot)
-                        self.operationStatusText = "Remove disc from I/E, then Continue (\(self.unloadAllCompleted)/\(self.unloadAllTotal))"
+                    guard let self = self else { return }
+                    self.carouselBatchSnapshot = snapshot
+                    self.operationStatusText = snapshot.status
+                    self.unloadAllCompleted = snapshot.completedSlots.count
+                    self.unloadAllQueue = uniqueTargets.filter {
+                        !snapshot.completedSlots.contains($0) && !snapshot.skippedSlots.contains($0)
                     }
+                    self.objectWillChange.send()
                 }
-
-            } catch let error as ChangerError {
+            },
+            onSlotState: { [weak self] slot, full in
                 DispatchQueue.main.async {
-                    // Skip errors and continue to next slot
-                    print("Slot \(nextSlot) failed: \(error.localizedDescription ?? "unknown"), skipping...")
-                    self.slots[nextSlot - 1].isFull = false  // Mark as empty since it probably is
-                    // Continue to next disc
-                    self.unloadNextDisc()
+                    guard let self = self, slot > 0, slot <= self.slots.count else { return }
+                    self.slots[slot - 1].isFull = full
+                    self.slots[slot - 1].isInDrive = false
+                    if !full {
+                        self.slots[slot - 1].discType = .unscanned
+                        self.slots[slot - 1].volumeLabel = nil
+                    }
+                    if mode == .unload { self.publishCarouselAnimation(.ejectFromChamber(slot)) }
                 }
-            } catch {
+            },
+            onFinished: { [weak self] in
                 DispatchQueue.main.async {
-                    // Skip errors and continue to next slot
-                    print("Slot \(nextSlot) failed: \(error.localizedDescription), skipping...")
-                    self.slots[nextSlot - 1].isFull = false
-                    self.unloadNextDisc()
+                    guard let self = self else { return }
+                    self.unloadAllInProgress = false
+                    self.currentOperation = nil
+                    self.carouselBatchOperation = nil
+                    self.operationNotice = self.carouselBatchSnapshot?.status
+                    self.refreshInventory()
                 }
             }
-        }
+        )
+        carouselBatchOperation = operation
+        carouselBatchSnapshot = operation.snapshot()
+        operation.start()
+        return true
+    }
+
+    @discardableResult
+    func controlCarouselBatch(_ action: CarouselBatchAction) -> Bool {
+        if action == .continueAfterRemoval { mockState?.clearIESlot() }
+        return carouselBatchOperation?.perform(action) ?? false
+    }
+
+    /// Compatibility entry points used by the Catalina desktop UI.
+    func startUnloadAll() {
+        _ = startCarouselUnload(targetSlots: slots.filter { $0.isFull && !$0.isInDrive }.map(\.id))
+    }
+
+    func cancelUnloadAll() {
+        _ = controlCarouselBatch(.cancel)
+    }
+
+    func continueUnloadAll() {
+        _ = controlCarouselBatch(.continueAfterRemoval)
     }
 
     // MARK: - Computed Properties
@@ -1319,7 +1941,7 @@ final class ChangerViewModel: ObservableObject {
     }
 
     var emptySlotCount: Int {
-        slots.filter { !$0.isFull && !$0.isInDrive }.count
+        slots.filter { !$0.isFull && !$0.isInDrive && !$0.hasException }.count
     }
 
     var deviceDescription: String {
@@ -1333,49 +1955,9 @@ final class ChangerViewModel: ObservableObject {
 
     /// Start batch load operation
     func startBatchLoad() {
-        guard isConnected else { return }
-        guard currentOperation == nil else { return }
-
-        let state = BatchOperationState()
-        DispatchQueue.main.async { [weak self] in
-            self?.batchState = state
-        }
-
-        state.runLoadAll(
-            slots: slots,
-            changerService: changerService,
-            mountService: mountService,
-            onUpdate: { [weak self] in
-                DispatchQueue.main.async {
-                    self?.objectWillChange.send()
-                }
-            },
-            onSlotLoaded: { [weak self] slot, bsdName, mountPoint in
-                DispatchQueue.main.async {
-                    guard let self = self else { return }
-                    self.currentBSDName = bsdName
-                    self.driveStatus = .loaded(sourceSlot: slot, mountPoint: mountPoint)
-                    if slot > 0 && slot <= self.slots.count {
-                        self.slots[slot - 1].isFull = false
-                        self.slots[slot - 1].isInDrive = true
-                    }
-                }
-            },
-            onSlotEjected: { [weak self] slot in
-                DispatchQueue.main.async {
-                    guard let self = self else { return }
-                    if slot > 0 && slot <= self.slots.count {
-                        self.slots[slot - 1].isFull = true
-                        self.slots[slot - 1].isInDrive = false
-                    }
-                    self.driveStatus = .empty
-                    self.currentBSDName = nil
-                }
-            },
-            onComplete: { [weak self] in
-                self?.refreshInventory()
-            }
-        )
+        _ = startCarouselLoad(targetSlots: slots.filter {
+            !$0.isFull && !$0.isInDrive && !$0.hasException
+        }.map(\.id))
     }
 
     // MARK: - Imaging Operations
@@ -1443,24 +2025,44 @@ final class ChangerViewModel: ObservableObject {
     }
 
     /// Start batch imaging operation
-    func startBatchImaging(outputDirectory: URL) {
+    func startBatchImaging(
+        outputDirectory: URL,
+        duplicatePolicy: DuplicatePolicy = .skipExisting,
+        outputMode: RipOutputMode = .automatic
+    ) {
         guard isConnected else { return }
-        guard currentOperation == nil else { return }
+        guard !isHardwareBusy else { return }
         guard !selectedSlotsForRip.isEmpty else { return }
+
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: outputDirectory.path, isDirectory: &isDirectory),
+              isDirectory.boolValue,
+              FileManager.default.isWritableFile(atPath: outputDirectory.path) else {
+            connectionError = .imagingFailed("The selected output folder is unavailable or not writable")
+            return
+        }
 
         let slotsToRip = slots.filter { selectedSlotsForRip.contains($0.id) && ($0.isFull || $0.isInDrive) }
         guard !slotsToRip.isEmpty else { return }
         let slotIdsToRip = slotsToRip.map(\.id)
+        let driveWasReconciledEmpty: Bool = {
+            guard Self.checkDirtyFlag() == nil else { return false }
+            if case .empty = driveStatus { return true }
+            return false
+        }()
 
         let state = BatchOperationState()
-        DispatchQueue.main.async { [weak self] in
-            self?.batchState = state
-        }
+        batchState = state
+        currentOperation = .batchImaging
+        operationStatusText = "Preparing rip queue..."
 
         state.runImageAll(
             slots: slotsToRip,
             outputDirectory: outputDirectory,
+            duplicatePolicy: duplicatePolicy,
+            outputMode: outputMode,
             driveFallbackSourceSlot: slots.first(where: { $0.isInDrive })?.id,
+            ignoreUntrackedDriveFull: driveWasReconciledEmpty,
             changerService: changerService,
             mountService: mountService,
             imagingService: imagingService,
@@ -1490,6 +2092,7 @@ final class ChangerViewModel: ObservableObject {
                     }
                     self.driveStatus = .empty
                     self.currentBSDName = nil
+                    Self.clearDirtyFlag()
                 }
                 DispatchQueue.global(qos: .userInitiated).async {
                     self?.refreshCatalogCache(forSlotIds: [slot])
@@ -1497,12 +2100,18 @@ final class ChangerViewModel: ObservableObject {
             },
             onComplete: { [weak self] in
                 DispatchQueue.main.async {
-                    self?.selectedSlotsForRip.removeAll()
+                    guard let self = self else { return }
+                    self.currentOperation = nil
+                    self.selectedSlotsForRip.removeAll()
+                    if self.changerService.isConnected {
+                        self.refreshInventory()
+                    } else {
+                        self.applyChangerError(.notResponding)
+                    }
                 }
                 DispatchQueue.global(qos: .userInitiated).async {
                     self?.refreshCatalogCache(forSlotIds: slotIdsToRip)
                 }
-                self?.refreshInventory()
             }
         )
     }
@@ -1531,31 +2140,55 @@ final class ChangerViewModel: ObservableObject {
     /// Attempt to eject disc back to its source slot synchronously.
     /// Called during app termination from a background thread.
     func emergencyEjectSync() -> Bool {
-        guard case .loaded(let sourceSlot, _) = driveStatus, sourceSlot > 0 else {
-            return true
+        let snapshot: (DriveStatus, String?) = {
+            if Thread.isMainThread { return (driveStatus, currentBSDName) }
+            return DispatchQueue.main.sync { (driveStatus, currentBSDName) }
+        }()
+
+        let sourceSlot = snapshot.0.sourceSlot ?? Self.checkDirtyFlag() ?? 0
+        if sourceSlot <= 0 {
+            return !mountService.isDiscPresent()
         }
+        guard sourceSlot > 0 else { return false }
 
         do {
-            if let bsd = currentBSDName {
-                try? mountService.unmountDisc(bsdName: bsd, force: true)
-                Thread.sleep(forTimeInterval: 1.0)
-
-                if mockState == nil {
-                    let process = Process()
-                    process.launchPath = "/usr/bin/drutil"
-                    process.arguments = ["eject"]
-                    process.launch()
-                    process.waitUntilExit()
-                    Thread.sleep(forTimeInterval: 3.0)
+            if let bsd = snapshot.1 {
+                if mountService.isMounted(bsdName: bsd) {
+                    try mountService.unmountDisc(bsdName: bsd, force: true)
                 }
+                try mountService.ejectDisc(bsdName: bsd, force: true)
             }
 
             try changerService.ejectToSlot(sourceSlot)
+            for _ in 0..<40 {
+                if let status = try? changerService.getDriveStatus(), !status.hasDisc {
+                    break
+                }
+                Thread.sleep(forTimeInterval: 0.25)
+            }
+            guard let status = try? changerService.getDriveStatus(), !status.hasDisc else {
+                return false
+            }
+            Self.clearDirtyFlag()
+            DispatchQueue.main.async {
+                self.currentBSDName = nil
+                self.driveStatus = .empty
+                if sourceSlot <= self.slots.count {
+                    self.slots[sourceSlot - 1].isFull = true
+                    self.slots[sourceSlot - 1].isInDrive = false
+                }
+            }
             return true
         } catch {
             print("emergencyEjectSync failed: \(error)")
             return false
         }
+    }
+
+    deinit {
+        reconnectWorkItem?.cancel()
+        hardwareWatchdog?.cancel()
+        driveMediaObserver.stop()
     }
 }
 

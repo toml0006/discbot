@@ -19,6 +19,7 @@ struct MainView: View {
 
     @State private var showingBatchSheet = false
     @State private var showingError = false
+    @State private var showingCatalog = false
     @State private var viewMode: InventoryViewMode = .grid
 
     // Zoom scale (0.5 to 2.0, default 1.0)
@@ -91,6 +92,9 @@ struct MainView: View {
                 BatchOperationSheet(batchState: batchState)
             }
         }
+        .sheet(isPresented: $showingCatalog) {
+            CatalogView(catalogService: viewModel.catalogService)
+        }
         .onReceive(viewModel.$batchState) { state in
             if state?.isRunning == true && !showingBatchSheet {
                 showingBatchSheet = true
@@ -118,6 +122,9 @@ struct MainView: View {
         .onReceive(NotificationCenter.default.publisher(for: .menuImageSelected)) { _ in
             pickFolderAndStartImaging()
         }
+        .onReceive(NotificationCenter.default.publisher(for: .menuShowCatalog)) { _ in
+            showingCatalog = true
+        }
     }
 
     @ViewBuilder
@@ -135,7 +142,8 @@ struct MainView: View {
 
     private func isQuickOperation(_ op: ChangerViewModel.Operation) -> Bool {
         switch op {
-        case .refreshing:
+        case .refreshing, .batchLoading, .batchImaging, .batchScanning,
+             .bulkImport, .bulkExport:
             return true
         default:
             return false
@@ -146,6 +154,16 @@ struct MainView: View {
 
     private var searchFilterBar: some View {
         HStack(spacing: 12) {
+            Button(action: { showingCatalog = true }) {
+                HStack(spacing: 5) {
+                    SFSymbol(name: "books.vertical.fill", size: 12)
+                    Text("Library")
+                }
+            }
+            .helpTooltip("Open the permanent disc library, rip history, activity log, and statistics")
+
+            Divider().frame(height: 18)
+
             // Search field (left-aligned)
             SearchFieldView(text: $viewModel.searchText, placeholder: "Search slots...")
                 .frame(width: 180, height: 22)
@@ -241,13 +259,30 @@ struct MainView: View {
 
             Spacer()
 
-            Button("Continue") {
-                viewModel.continueUnloadAll()
+            if carouselActions.contains(.continueAfterRemoval) {
+                Button("Disc Removed — Continue") {
+                    viewModel.controlCarouselBatch(.continueAfterRemoval)
+                }
+                .font(.caption)
             }
-            .font(.caption)
+
+            if carouselActions.contains(.retry) {
+                Button("Retry") { viewModel.controlCarouselBatch(.retry) }
+                    .font(.caption)
+            }
+
+            if carouselActions.contains(.skip) {
+                Button("Skip") { viewModel.controlCarouselBatch(.skip) }
+                    .font(.caption)
+            }
+
+            if carouselActions.contains(.finish) {
+                Button("Finish") { viewModel.controlCarouselBatch(.finish) }
+                    .font(.caption)
+            }
 
             Button("Cancel") {
-                viewModel.cancelUnloadAll()
+                viewModel.controlCarouselBatch(.cancel)
             }
             .font(.caption)
         }
@@ -348,18 +383,25 @@ struct MainView: View {
     // MARK: - Helpers
 
     private var isWaitingForDiscRemoval: Bool {
+        if viewModel.carouselBatchSnapshot?.running == true {
+            return true
+        }
         if case .waitingForDiscRemoval = viewModel.currentOperation {
             return true
         }
         return false
     }
 
+    private var carouselActions: [CarouselBatchAction] {
+        viewModel.carouselBatchSnapshot?.allowedActions ?? []
+    }
+
     private var imageButtonLabel: String {
         let count = viewModel.selectedSlotsForRip.count
         if count == 0 {
-            return "Image"
+            return "Rip"
         }
-        return "Image (\(count))"
+        return "Rip (\(count))"
     }
 
     private var imageTooltip: String {
@@ -367,50 +409,58 @@ struct MainView: View {
         if viewModel.selectedSlotsForRip.isEmpty {
             return "Click discs to select them for imaging"
         }
-        return "Image \(viewModel.selectedSlotsForRip.count) disc(s) to ISO (⌘⌥I)"
+        return "Rip \(viewModel.selectedSlotsForRip.count) disc(s) (⌘⌥I)"
     }
 
     private func pickFolderAndStartImaging() {
-        if !confirmReimagingIfNeeded() {
-            return
-        }
-
         let panel = NSOpenPanel()
         panel.title = "Choose Output Folder"
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
         panel.canCreateDirectories = true
         panel.allowsMultipleSelection = false
+        panel.prompt = "Start Batch Rip"
+        panel.message = "Choose where disc images should be saved"
+
+        let formatLabel = NSTextField(labelWithString: "Rip format:")
+        formatLabel.frame = NSRect(x: 0, y: 104, width: 420, height: 18)
+        let formatPopup = NSPopUpButton(frame: NSRect(x: 0, y: 70, width: 300, height: 28))
+        formatPopup.addItems(withTitles: RipOutputMode.allCases.map(\.displayName))
+        formatPopup.selectItem(at: 0)
+        formatPopup.toolTip = RipOutputMode.automatic.detail
+
+        let duplicateLabel = NSTextField(labelWithString: "When a verified rip already exists:")
+        duplicateLabel.frame = NSRect(x: 0, y: 42, width: 420, height: 18)
+        let duplicatePopup = NSPopUpButton(frame: NSRect(x: 0, y: 8, width: 260, height: 28))
+        duplicatePopup.addItems(withTitles: [
+            "Skip existing image",
+            "Replace existing image",
+            "Keep both images"
+        ])
+        duplicatePopup.selectItem(at: 0)
+        duplicatePopup.toolTip = "Replace writes and verifies the new image before removing the previous copy."
+        let accessory = NSView(frame: NSRect(x: 0, y: 0, width: 430, height: 128))
+        accessory.addSubview(formatLabel)
+        accessory.addSubview(formatPopup)
+        accessory.addSubview(duplicateLabel)
+        accessory.addSubview(duplicatePopup)
+        panel.accessoryView = accessory
 
         guard panel.runModal() == .OK, let url = panel.url else { return }
 
         showingBatchSheet = true
-        viewModel.startBatchImaging(outputDirectory: url)
-    }
-
-    private func confirmReimagingIfNeeded() -> Bool {
-        let previouslyImaged = viewModel.previouslyImagedSelectedSlots
-        guard !previouslyImaged.isEmpty else { return true }
-
-        let alert = NSAlert()
-        alert.messageText = "\(previouslyImaged.count) selected disc(s) were already imaged"
-
-        let slotSummary = previouslyImaged
-            .prefix(8)
-            .map { slot in
-                if let label = slot.volumeLabel, !label.isEmpty {
-                    return "Slot \(slot.id): \(label)"
-                }
-                return "Slot \(slot.id)"
-            }
-            .joined(separator: "\n")
-        let remaining = previouslyImaged.count - min(previouslyImaged.count, 8)
-        let suffix = remaining > 0 ? "\n…and \(remaining) more" : ""
-        alert.informativeText = "This queue includes discs with successful rip history.\n\n\(slotSummary)\(suffix)\n\nContinue anyway?"
-
-        alert.addButton(withTitle: "Continue")
-        alert.addButton(withTitle: "Cancel")
-        return alert.runModal() == .alertFirstButtonReturn
+        let policy: DuplicatePolicy
+        switch duplicatePopup.indexOfSelectedItem {
+        case 1: policy = .replaceExisting
+        case 2: policy = .imageAgain
+        default: policy = .skipExisting
+        }
+        let outputMode = RipOutputMode.allCases[formatPopup.indexOfSelectedItem]
+        viewModel.startBatchImaging(
+            outputDirectory: url,
+            duplicatePolicy: policy,
+            outputMode: outputMode
+        )
     }
 }
 

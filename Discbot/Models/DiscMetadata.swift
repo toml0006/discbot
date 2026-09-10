@@ -7,21 +7,60 @@
 
 import Foundation
 
-struct DiscMetadata: Equatable {
+struct DiscMetadata: Equatable, Codable {
     let artist: String
     let album: String
     let year: String?
+    let genre: String?
     let tracks: [TrackInfo]?
     let source: MetadataSource
+    let providerID: String?
+    let overview: String?
+    let artworkURL: String?
 
-    enum MetadataSource: Equatable {
-        case musicBrainz
-        case cddb
-        case volumeLabel
-        case slotNumber
+    init(
+        artist: String,
+        album: String,
+        year: String?,
+        genre: String? = nil,
+        tracks: [TrackInfo]?,
+        source: MetadataSource,
+        providerID: String? = nil,
+        overview: String? = nil,
+        artworkURL: String? = nil
+    ) {
+        self.artist = artist
+        self.album = album
+        self.year = year
+        self.genre = genre
+        self.tracks = tracks
+        self.source = source
+        self.providerID = providerID
+        self.overview = overview
+        self.artworkURL = artworkURL
     }
 
-    struct TrackInfo: Equatable {
+    enum MetadataSource: String, Equatable, Codable, CaseIterable {
+        case musicBrainz
+        case tmdb
+        case cddb
+        case manual
+        case volumeLabel
+        case slotNumber
+
+        var displayName: String {
+            switch self {
+            case .musicBrainz: return "MusicBrainz"
+            case .tmdb: return "TMDB"
+            case .cddb: return "CDDB"
+            case .manual: return "Manual"
+            case .volumeLabel: return "Disc label"
+            case .slotNumber: return "Slot number"
+            }
+        }
+    }
+
+    struct TrackInfo: Equatable, Codable {
         let number: Int
         let title: String
         let duration: TimeInterval?
@@ -32,7 +71,7 @@ struct DiscMetadata: Equatable {
         var name: String
 
         switch source {
-        case .musicBrainz, .cddb:
+        case .musicBrainz, .cddb, .manual, .tmdb:
             var parts = [artist, "-", album]
             if let year = year {
                 parts.append("(\(year))")

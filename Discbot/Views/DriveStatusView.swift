@@ -101,15 +101,21 @@ struct DriveStatusView: View {
             .padding(.vertical, 4)
             .background(Color.primary.opacity(0.06))
         ) {
-            Button("Load All Discs") {
+            Button("Load Empty Slots") {
                 viewModel.startBatchLoad()
             }
-            .disabled(viewModel.currentOperation != nil || viewModel.fullSlotCount == 0)
+            .disabled(viewModel.currentOperation != nil || viewModel.emptySlotCount == 0 || !viewModel.hasIESlot)
 
-            Button("Eject All") {
+            Button("Unload All Discs") {
                 viewModel.startUnloadAll()
             }
             .disabled(viewModel.currentOperation != nil || viewModel.fullSlotCount == 0 || !viewModel.hasIESlot)
+
+            VStack { Divider() }
+
+            Button("Disc Catalog...") {
+                NotificationCenter.default.post(name: .menuShowCatalog, object: nil)
+            }
 
             if viewModel.hasIESlot {
                 VStack { Divider() }

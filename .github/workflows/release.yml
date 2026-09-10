@@ -60,6 +60,10 @@ jobs:
           echo "LSMinimumSystemVersion: $MIN_OS"
           [ "$MIN_OS" = "10.15" ] || { echo "Expected LSMinimumSystemVersion=10.15"; exit 1; }
 
+      - name: Run hardware-free batch integration test
+        run: |
+          "$BIN_PATH" --self-test
+
       - name: Determine signing/notarization mode
         id: mode
         env:
